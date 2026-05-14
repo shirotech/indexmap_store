@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | inline-hot-path-functions | src/lib.rs | LOW | INCONCLUSIVE | Added #[inline] to thin accessors, mutation entry points, flush_scratch, maybe_compact, serialize_err; all scenarios within ±1% noise across 3 runs; reverted |
 | 2026-05-14 | single-open-for-replay-and-append | src/lib.rs | LOW | INCONCLUSIVE | Saved 1–2 open syscalls per open_with; reopen_10k drift -0.7% to +0.5%, all within noise; reverted |
 | 2026-05-14 | bincode-varint-encoding | src/lib.rs | MEDIUM | REVERTED | +65% regression on reopen_10k — varint decode overhead dwarfs disk-size savings (data is page-cached) |
 | 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
@@ -23,6 +24,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — inline-hot-path-functions
+
+- **Hypothesis:** Adding `#[inline]` to the thin public accessors (`len`, `is_empty`, `contains_key`, `get`, `get_index`, `iter`, `keys`, `values`, `as_index_map`), the mutation entry points (`insert`, `remove`, `modify`), the private helpers (`flush_scratch`, `maybe_compact`), and the free function `serialize_err` lets ThinLTO inline call sites in the bench harness more aggressively, potentially eliminating call overhead on per-iteration hot paths.
+- **Risk:** LOW (no behavior change, no API change).
+- **Files touched:** `src/lib.rs`.
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.36 ms
+  - insert_2k_strings: 5.47 ms
+  - lookup_100k: 631.23 us
+  - modify_10k: 5.12 ms
+  - reopen_10k: 188.38 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.20% / -0.01% / -0.42%   (within noise)
+  - insert_2k_strings: +0.21% / +0.22% / +0.20%   (within noise)
+  - lookup_100k:      -0.18% / +0.06% / -0.22%   (within noise)
+  - modify_10k:       +0.56% / +0.65% / +0.92%   (within noise — directionally negative but under +2% guard)
+  - reopen_10k:       -0.61% / -0.82% / -0.53%   (within noise — directionally positive but not -3%)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** With `lto = "thin"` and `codegen-units = 1` already set in the bench profile, the compiler is already aggressively cross-crate-inlining hot bench callees based on size heuristics. Marking these `#[inline]` exposes MIR upfront but doesn't change ThinLTO's decisions for functions that were already small enough (e.g., one-line accessors) or already monomorphized in the consuming crate (the generic methods). The `modify_10k` runs drifted slightly positive (+0.6% to +0.9%) — likely codegen layout shuffling rather than real regression — but they stayed under the +2% guard. No scenario hit the -3% improvement gate.
+- **Follow-ups / dead ends:** Closed: blanket `#[inline]` on the entire public/private surface. Open: targeted `#[inline(always)]` on a single specific hot callee (e.g., `flush_scratch` only) — would be a different shape and might surface a real signal if there is one, but the diffuse signal here suggests the call overhead simply isn't on the critical path. Open: `#[cold]` on `maybe_compact`'s slow branches (the `compact()` invocation) to keep the no-op fast path hotter in icache — different hypothesis.
 
 ### 2026-05-14 — single-open-for-replay-and-append
 
