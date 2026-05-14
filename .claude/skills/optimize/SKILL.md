@@ -109,13 +109,13 @@ Each printed Δ p50 column compares that run to the pre-change baseline. Capture
 
 ## 7. Verdict logic
 
-Default bench config is `BENCH_SAMPLES=1001`, `BENCH_WARMUP=5` — noise floor is ≈1%. Thresholds:
+Default bench config is `BENCH_SAMPLES=1001`, `BENCH_WARMUP=5` — noise floor is ≈1%. The gates sit just above noise on both sides; tighter than the original ±2/-3% but still tolerant of single-run jitter on the improvement side. Thresholds:
 
 | Verdict | Improvement gate | Regression guard |
 |---|---|---|
-| **KEPT** | ≥1 scenario shows Δ p50 ≤ **-3%** in **all 3 runs** | No scenario shows Δ p50 ≥ **+2%** in **any** run |
-| **REVERTED** | — | Any scenario shows Δ p50 ≥ **+2%** in any run |
-| **INCONCLUSIVE** | All scenarios within ±2% (or improvement isn't consistent across all 3 runs) | — |
+| **KEPT** | ≥1 scenario shows Δ p50 ≤ **-1.5%** in **all 3 runs** | No scenario shows Δ p50 ≥ **+1.5%** in **any** run |
+| **REVERTED** | — | Any scenario shows Δ p50 ≥ **+1.5%** in any run |
+| **INCONCLUSIVE** | All scenarios within ±1.5% AND no scenario consistently ≤ -1.5% across all 3 runs | — |
 
 Apply them in this order: regression first → improvement → otherwise inconclusive.
 
