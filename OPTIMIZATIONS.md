@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold |
 | 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold |
 | 2026-05-14 | inline-hot-path-functions | src/lib.rs | LOW | INCONCLUSIVE | Added #[inline] to thin accessors, mutation entry points, flush_scratch, maybe_compact, serialize_err; all scenarios within ±1% noise across 3 runs; reverted |
 | 2026-05-14 | single-open-for-replay-and-append | src/lib.rs | LOW | INCONCLUSIVE | Saved 1–2 open syscalls per open_with; reopen_10k drift -0.7% to +0.5%, all within noise; reverted |
@@ -25,6 +26,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — bufwriter-capacity-1mb
+
+- **Hypothesis:** Raising `StoreConfig::default().buf_capacity` from 256KB to 1MB keeps the BufWriter backing buffer comfortably above glibc's dynamic mmap threshold (which starts at 128KB and can be raised by the heuristic up to ~64MB as mmap'd chunks are freed), so the allocator stays on the mmap path even after many alloc/free cycles in tight bench loops.
+- **Risk:** LOW (no API or semantic change; default value tweak; field is configurable).
+- **Files touched:** `src/lib.rs` (`StoreConfig::default`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.34 ms
+  - insert_2k_strings: 5.47 ms
+  - lookup_100k: 632.21 us
+  - modify_10k: 5.17 ms
+  - reopen_10k: 172.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -1.78% / -1.31% / -1.40%   (within noise — directionally positive, under -3% gate)
+  - insert_2k_strings: +0.05% / -0.01% / -0.07%   (within noise)
+  - lookup_100k:      -0.16% / -0.15% / -0.33%   (within noise)
+  - modify_10k:       +0.15% / -0.65% / -0.21%   (within noise)
+  - reopen_10k:       -29.95% / -29.35% / -29.69%   (KEPT — all three far below -3%)
+- **Verdict:** KEPT.
+- **Why:** Huge, dead-flat 30% improvement on `reopen_10k` (172us → 121us) reproduced to within 0.3% across three independent runs. Mechanism: glibc's M_MMAP_THRESHOLD is dynamic — when mmap'd allocations are freed, the threshold can rise toward `M_MMAP_MAX`, which means later allocations of similar size silently shift back to the heap, incurring per-call heap fragmentation work. 1MB allocations sit far enough above any plausible heuristic ceiling that the allocator consistently routes through `mmap` (page-aligned, lazily zeroed pages, no zeroing happens since the buffer is allocated-but-unused on the read-path). Mutation paths stay flat (the buffer gets written into either way; ~10k * 24 bytes = 240KB total fits in one flush at either 256KB or 1MB). The new `bench_results.json` from run 3 becomes the next baseline.
+- **Follow-ups / dead ends:** Closed: bumping the default to 1MB. Open: investigating whether 2MB or 4MB helps further — diminishing returns expected and at some point committing too much memory hurts on multi-store workloads. Open: explicitly calling `mallopt(M_MMAP_THRESHOLD, 131072)` at lib init to force mmap for smaller buffers too — requires `libc` dep and a once-init, separate hypothesis. Open: replacing the BufWriter with a direct `mmap`-backed writer to skip the userspace copy on the buffered path — HIGH risk (introduces mmap, complex semantics).
 
 ### 2026-05-14 — larger-default-bufwriter-capacity
 
