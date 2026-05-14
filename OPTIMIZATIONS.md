@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | bufwriter-capacity-2mb | src/lib.rs | LOW | INCONCLUSIVE | Bumped default `buf_capacity` from 1MB to 2MB — all scenarios within ±1% noise (reopen_10k -0.68% / +0.61% / -0.61%); 1MB already past the mmap-threshold ceiling, diminishing returns confirmed; reverted |
 | 2026-05-14 | mmap-slurp-buffer-min-1mb | src/lib.rs | LOW | REVERTED | `Vec::with_capacity(total_on_disk).max(1MB)` regressed reopen_10k +4.86% to +5.04% across all 3 runs — the larger mmap region the kernel has to track (1MB) costs more on every reopen than the 240KB slurp it replaced, while only the first 240KB ever gets touched |
 | 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed |
 | 2026-05-14 | mark-compact-as-cold | src/lib.rs | LOW | REVERTED | `#[cold]` on `compact()` regressed reopen_10k +3.6% to +4.0% across all 3 runs — binary-layout side effect hurt icache locality on the read path |
@@ -30,6 +31,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — bufwriter-capacity-2mb
+
+- **Hypothesis:** Bumping `StoreConfig::default().buf_capacity` from 1MB → 2MB might widen the gap above glibc's dynamic `M_MMAP_THRESHOLD` ceiling further, giving an additional small step on `reopen_10k` (which gained -30% going 256KB→1MB). Explicit open follow-up from `bufwriter-capacity-1mb`'s "investigate whether 2MB or 4MB helps further — diminishing returns expected".
+- **Risk:** LOW (one-constant change; field stays configurable; no API or semantic impact).
+- **Files touched:** `src/lib.rs` (`StoreConfig::default`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.16% / +0.05% / -0.21%   (within noise)
+  - insert_2k_strings: +0.15% / -0.15% / -0.16%   (within noise)
+  - lookup_100k:      -0.12% / -0.17% / +0.19%   (within noise)
+  - modify_10k:       +0.09% / +0.15% / -0.39%   (within noise)
+  - reopen_10k:       -0.68% / +0.61% / -0.61%   (within noise — no consistent direction; one run was tiny improvement, next tiny regression)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** The mechanism that paid out for 256KB→1MB (crossing the dynamic mmap-threshold ceiling consistently) is already saturated at 1MB — going 1MB→2MB doesn't change whether the allocator routes through mmap (it does either way), it just allocates a larger lazily-zeroed VMA. The bench harness exercises a hot path where the buffer is allocated but never written into on `reopen_10k`, so the extra 1MB of capacity is pure overhead per VMA insert, and the cost is small enough to disappear under the ±1% noise band. Confirms the diminishing-returns prediction from `bufwriter-capacity-1mb`'s follow-ups.
+- **Follow-ups / dead ends:** Closed: bumping default `buf_capacity` further (the threshold-crossing mechanism is exhausted at 1MB). Closed (by extension): 4MB or 8MB defaults — same logic, slightly worse VMA overhead. Open: dropping the default to a lazy/zero-cost initial state and only allocating the buffer on first mutation (would save the 1MB mmap entirely on read-only opens) — requires struct refactor to `Option<BufWriter>` or enum, LOW-MEDIUM risk. Open: `mallopt(M_MMAP_THRESHOLD, 131072)` at lib init to anchor the threshold globally — adds libc dep, MEDIUM risk.
 
 ### 2026-05-14 — mmap-slurp-buffer-min-1mb
 
