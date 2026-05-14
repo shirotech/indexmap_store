@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | inline-enum-tag-u8 | src/lib.rs | MEDIUM | INCONCLUSIVE | Replaced bincode 4-byte enum tag with manual 1-byte tag + bincode tuple; saved 3 bytes/record but all scenarios within ±2% noise; modify_10k -1.1% to -1.4% under -3% gate; reverted |
 | 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold |
 | 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold |
 | 2026-05-14 | inline-hot-path-functions | src/lib.rs | LOW | INCONCLUSIVE | Added #[inline] to thin accessors, mutation entry points, flush_scratch, maybe_compact, serialize_err; all scenarios within ±1% noise across 3 runs; reverted |
@@ -26,6 +27,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — inline-enum-tag-u8
+
+- **Hypothesis:** Replacing bincode's serde-derived enum encoding (4-byte u32 variant tag + payload) with a manually written 1-byte tag (`0 = Insert`, `1 = Remove`) followed by bincode-serialized payload (`(K, V)` tuple for Insert, `K` for Remove) shrinks each record by 3 bytes (~12% for u64,u64 records) and skips the serde enum-dispatch trait machinery on both the write and replay paths.
+- **Risk:** MEDIUM (changes on-disk log format — older logs are unreadable; tests confirmed not to rely on byte-level layout).
+- **Files touched:** `src/lib.rs` (removed `LogRef`/`LogOwned` enums, added `TAG_INSERT`/`TAG_REMOVE` constants, rewrote `insert`/`remove`/`modify` write paths, replay loop in `open_with`, and `compact` write loop).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.46 ms
+  - lookup_100k: 630.13 us
+  - modify_10k: 5.16 ms
+  - reopen_10k: 121.04 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.01% / +0.17% / +0.91%   (within noise — drifts positive but under +2% guard)
+  - insert_2k_strings: +0.35% / +0.16% / +0.00%   (within noise)
+  - lookup_100k:      -0.03% / +0.25% / +0.29%   (within noise)
+  - modify_10k:       -1.11% / -1.41% / -1.31%   (within noise — directionally positive but under -3% gate)
+  - reopen_10k:       +0.14% / +0.93% / +0.55%   (within noise)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** The 3-byte/record savings translate to ~12% smaller writes but contribute essentially nothing to wallclock because (a) the log lives in the page cache during benches, so disk-size wins don't translate, and (b) bincode's fixint u32 tag is decoded as a single 4-byte load — already cheap. Replay's perceived bottleneck is the K/V deserialize + IndexMap::insert (~7ns/op combined), and skipping the enum discriminant dispatch saves maybe 1-2ns/op which is below noise. `modify_10k` shows a consistent ~1.2% improvement that hints at real-but-tiny signal, but it doesn't cross the -3% gate. Manual tag handling on the read side adds a branch that probably eats most of the saving. Net flat.
+- **Follow-ups / dead ends:** Closed: trimming the enum tag from u32 to u8 via manual encoding. Closed (by extension): "make the log records smaller on disk" line for the current bench workload — the cache-resident replay path is bottlenecked by IndexMap::insert and serde dispatch, not bytes. Open: replacing bincode entirely with a hand-rolled codec specialized on `K: Pod + V: Pod` primitive types (changes format, would need a feature flag for non-Pod types) — could skip serde dispatch entirely, MEDIUM risk. Open: caching the hash of K to skip rehashing during replay (presumes K stores its precomputed hash, doesn't generalize). Open: adding `#[cold]` on compact() to give the inline-hot mutation path a better icache layout — separate hypothesis.
 
 ### 2026-05-14 — bufwriter-capacity-1mb
 
