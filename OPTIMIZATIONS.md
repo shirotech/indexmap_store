@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | uninline-mutation-entry-points | src/lib.rs | LOW | REVERTED | Removed the `#[inline]` annotation from `insert`/`remove`/`modify` to test whether ThinLTO's heuristic would *not* inline them and leave the bodies in lib.rs's text segment (motivated by `inline-always-insert-remove-modify`'s +9% reopen regression from over-inlining) — reopen_10k still regressed +6.14% / +6.05% / +5.65% across all 3 runs; both directions of the inline knob hurt reopen, confirming the existing `#[inline]` (heuristic-friendly) is locally optimal; write paths flat |
 | 2026-05-14 | inline-always-insert-remove-modify | src/lib.rs | LOW | REVERTED | Promoted `#[inline]` → `#[inline(always)]` on the three public mutation entry points — reopen_10k regressed +9.33% / +9.39% / +9.23% across all 3 runs (~11us on a 119us baseline) despite reopen calling none of those functions; the larger inlined bodies in the bench harness's u64-monomorphisation shifted symbol layout enough to push something off the read path's icache; clear example of how `#[inline(always)]` on hot public APIs can hurt unrelated cold-ish paths through codegen-layout side effects |
 | 2026-05-14 | truncate-scratch-preserve-len-prefix | src/lib.rs | LOW | INCONCLUSIVE | Replaced `clear + extend(&[0;4]) + push(tag)` with `truncate(LEN_BYTES) + push(tag)` after pre-seeding scratch with 4 zero bytes at construction — reopen_10k drifts consistently -1.62% / -1.14% / -0.86% (only run 1 clears -1.5%; gate requires all 3) and insert_2k_strings -0.49% / -0.19% / -0.31% (directional, well under gate); reverted |
 | 2026-05-14 | combine-len-prefix-and-tag-extend | src/lib.rs | LOW | INCONCLUSIVE | Fused `extend_from_slice(&[0;4])` + `push(tag)` into one `extend_from_slice(&[0,0,0,0,tag])` across insert/remove/modify — all scenarios within ±1.2% noise; modify_10k -0.71%/+0.01%/+0.16%, reopen_10k -0.59%/-1.20%/-0.24% (directional but neither clears -1.5% gate); reverted |
@@ -36,6 +37,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — uninline-mutation-entry-points
+
+- **Hypothesis:** Motivated by the immediately-preceding `inline-always-insert-remove-modify` REVERTED result (+9% reopen regression from forcing inlining of large bodies into the bench harness): the symmetric experiment is to *remove* the `#[inline]` annotation entirely from `insert`/`remove`/`modify`, letting ThinLTO's heuristic decide. The heuristic might judge these ~30-line bodies too big to inline cross-crate, which would keep them in lib.rs's text segment, shrink the bench harness's loop bodies, and free up icache for the read path that reopen exercises.
+- **Risk:** LOW (no API/format/dep change; removal of one annotation).
+- **Files touched:** `src/lib.rs` (`insert`, `remove`, `modify` — dropped `#[inline]`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.22% / +0.18% / +0.09%   (within noise — write path flat as expected from the heuristic)
+  - insert_2k_strings: -0.34% / -0.15% / +0.07%   (within noise)
+  - lookup_100k:      -0.15% / +0.20% / +0.15%   (within noise)
+  - modify_10k:       -0.23% / -0.17% / -0.43%   (within noise — modify_10k drifts slightly negative but well under gate)
+  - reopen_10k:       +6.14% / +6.05% / +5.65%   (REVERTED — all three over +1.5% guard, ~7us regression on a 119us baseline)
+- **Verdict:** REVERTED.
+- **Why:** Both directions of the inline knob hurt reopen, but the existing `#[inline]` (heuristic-friendly hint) is locally optimal — and that lands well below the always-inline backfire and above the never-inline backfire. Removing the annotation didn't make ThinLTO skip inlining; instead the linker's symbol-ordering pass produced a layout where the read path's hot icache lines compete with something else. The net effect (+6%) is smaller than `inline-always-insert-remove-modify`'s (+9%) but still firmly over the guard. Key takeaway combined with the previous attempt: this codebase sits at a delicate codegen-layout optimum on the existing annotation set. Edits that touch annotation strength on the mutation entry points shift the read path's icache layout unfavourably regardless of direction, and we don't have a tool (in the single-file-edit model) to control the layout directly.
+- **Follow-ups / dead ends:** Closed: removing the `#[inline]` from the mutation entry points. Closed (by extension): trying `#[inline(hint)]` / `#[inline(never)]` / other inline-knob variants on these functions — the layout is already at a local optimum and tuning inlining without controlling layout is a wash at best. Open: explicit symbol ordering via `-Wl,--symbol-ordering-file` (would pin the reopen-hot functions together) or PGO (would let the linker measure and decide) — both require build-system support beyond `Cargo.toml`/`src/`. Open: extracting the hot bincode tuple deserialise into a non-generic helper so it can be deduplicated across u64-vs-String monomorphisations — would shrink the binary and could shrink icache pressure, but it's a refactor rather than a knob.
 
 ### 2026-05-14 — inline-always-insert-remove-modify
 
