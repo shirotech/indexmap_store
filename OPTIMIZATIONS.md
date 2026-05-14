@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | lazy-bufwriter-allocation | src/lib.rs | LOW | REVERTED | Deferred the 1MB BufWriter mmap until first mutation via `log: Option<BufWriter>` + `file: Option<File>` — reopen_10k regressed +0.95% / +1.56% / +2.89% (run 1 over +1.5% guard); the extra struct field + per-write `is_none()` branch + Drop-time discrimination outweighed the saved mmap, and the struct grew enough that codegen layout shifted unfavorably on the read path |
 | 2026-05-14 | bufwriter-capacity-2mb | src/lib.rs | LOW | INCONCLUSIVE | Bumped default `buf_capacity` from 1MB to 2MB — all scenarios within ±1% noise (reopen_10k -0.68% / +0.61% / -0.61%); 1MB already past the mmap-threshold ceiling, diminishing returns confirmed; reverted |
 | 2026-05-14 | mmap-slurp-buffer-min-1mb | src/lib.rs | LOW | REVERTED | `Vec::with_capacity(total_on_disk).max(1MB)` regressed reopen_10k +4.86% to +5.04% across all 3 runs — the larger mmap region the kernel has to track (1MB) costs more on every reopen than the 240KB slurp it replaced, while only the first 240KB ever gets touched |
 | 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed |
@@ -31,6 +32,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — lazy-bufwriter-allocation
+
+- **Hypothesis:** Deferring the 1MB `BufWriter::with_capacity(...)` mmap until the first mutation (by replacing `log: BufWriter<File>` with the pair `log: Option<BufWriter<File>>` + `file: Option<File>`, maintaining the invariant that exactly one is `Some`) would skip the allocation entirely on read-only opens. On the `reopen_10k` hot path the bench opens-then-drops without mutating, so the buffer is allocated-and-never-touched today — a clear waste.
+- **Risk:** LOW (internal struct change; no API, format, or dep change; all 12 integration tests still pass).
+- **Files touched:** `src/lib.rs` (`IndexMapStore` struct + `Drop`, `open_with`, `flush`, `compact`, `flush_scratch`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.10% / +0.40% / +0.22%   (within noise; consistent positive drift, probably layout-induced)
+  - insert_2k_strings: -0.18% / -0.18% / +0.03%   (within noise)
+  - lookup_100k:      -0.05% / +0.26% / +0.03%   (within noise)
+  - modify_10k:       +0.02% / -0.02% / +0.38%   (within noise)
+  - reopen_10k:       +2.89% / +0.95% / +1.56%   (REVERTED — run 1 firmly over +1.5% guard, runs 2 and 3 sit on or above the line)
+- **Verdict:** REVERTED.
+- **Why:** The expected win — saving the 1MB BufWriter mmap on read-only opens — exists but is small (~1–2us out of 119us). Three offsetting costs eat it and tip the balance negative on reopen_10k: (1) the struct grew by one `Option<File>` (~16 bytes including discriminant + padding), pushing later fields like `scratch` onto a different cache line and shifting where the struct lives in malloc's chunk space; (2) `Drop` now has to discriminate the Option each time a store goes out of scope (the reopen bench drops 1001 stores in the timed loop, so even cheap branches accumulate); (3) the `flush` path the bench calls indirectly through the harness has to discriminate too. On `insert_10k_u64` the same struct grew but the per-call overhead of `flush_scratch`'s extra `is_none()` is amortised across 10k inserts and the lazy upgrade happens only once — small but consistent positive drift (+0.1% to +0.4%) suggests a real but sub-noise cost. The mechanism that paid out at +30% for `bufwriter-capacity-1mb` (mmap allocation is *fast* in this regime) is the same mechanism that makes "skip the mmap entirely" worth less than expected: the alloc was already cheap. Combined with codegen layout effects, net regression.
+- **Follow-ups / dead ends:** Closed: lazy-init via `Option<BufWriter>` + `Option<File>` pair pattern. Closed (by extension): any reformulation that puts another Option-discriminant on the hot mutation path — codegen layout shifts on this struct hurt reopen more than the saved alloc helps. Open: lazy-init via a `BufWriter::with_capacity(0, file)` placeholder + in-place upgrade (avoids the Option pair, keeps the struct shape the same, costs an `unsafe` `mem::replace` or a dummy-File constructor) — different shape, MEDIUM risk because of the unsafe. Open: making `BufWriter::with_capacity(cap, file)` truly zero-alloc by passing a file-pre-sized capacity — std doesn't expose this, would need a custom writer, separate hypothesis. Open: `mallopt(M_MMAP_THRESHOLD, 131072)` global anchor — same family but different mechanism, adds libc dep (MEDIUM).
 
 ### 2026-05-14 — bufwriter-capacity-2mb
 
