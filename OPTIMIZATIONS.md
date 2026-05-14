@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | inline-always-flush-scratch | src/lib.rs | LOW | INCONCLUSIVE | Promoted `#[inline]` → `#[inline(always)]` on `flush_scratch` (targeted follow-up from inline-hot-path-functions) — all scenarios within ±1% noise; reopen_10k drifts -0.21% / -0.65% / -0.70% (directional but under -1.5% gate); ThinLTO already inlined flush_scratch as expected, the `always` only forces what was already happening |
 | 2026-05-14 | lazy-bufwriter-allocation | src/lib.rs | LOW | REVERTED | Deferred the 1MB BufWriter mmap until first mutation via `log: Option<BufWriter>` + `file: Option<File>` — reopen_10k regressed +0.95% / +1.56% / +2.89% (run 1 over +1.5% guard); the extra struct field + per-write `is_none()` branch + Drop-time discrimination outweighed the saved mmap, and the struct grew enough that codegen layout shifted unfavorably on the read path |
 | 2026-05-14 | bufwriter-capacity-2mb | src/lib.rs | LOW | INCONCLUSIVE | Bumped default `buf_capacity` from 1MB to 2MB — all scenarios within ±1% noise (reopen_10k -0.68% / +0.61% / -0.61%); 1MB already past the mmap-threshold ceiling, diminishing returns confirmed; reverted |
 | 2026-05-14 | mmap-slurp-buffer-min-1mb | src/lib.rs | LOW | REVERTED | `Vec::with_capacity(total_on_disk).max(1MB)` regressed reopen_10k +4.86% to +5.04% across all 3 runs — the larger mmap region the kernel has to track (1MB) costs more on every reopen than the 240KB slurp it replaced, while only the first 240KB ever gets touched |
@@ -32,6 +33,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — inline-always-flush-scratch
+
+- **Hypothesis:** Targeted follow-up from `inline-hot-path-functions` ("targeted `#[inline(always)]` on a single specific callee"). Promoting `flush_scratch` from `#[inline]` to `#[inline(always)]` would force inlining at every callsite (`insert`/`remove`/`modify`) even where ThinLTO's size heuristic might pass on it — possibly merging the per-call setup into the bench loop body and exposing loop-invariant code-motion opportunities for LLVM.
+- **Risk:** LOW (one-line annotation change; no behavior, API, format, or dep impact).
+- **Files touched:** `src/lib.rs` (`flush_scratch`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.06% / -0.22% / +0.22%   (within noise)
+  - insert_2k_strings: +0.31% / -0.14% / +0.25%   (within noise)
+  - lookup_100k:      -0.16% / +0.18% / -0.01%   (within noise)
+  - modify_10k:       -0.13% / +0.28% / -0.17%   (within noise)
+  - reopen_10k:       -0.21% / -0.65% / -0.70%   (within noise — directionally positive but well under -1.5% gate)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** `flush_scratch` is small (~20 lines, mostly straight-line stores) and was already `#[inline]`. With `lto = "thin"` + `codegen-units = 1` in the bench profile, ThinLTO's inliner uses MIR cost to decide cross-crate inlines, and a function this small clears any heuristic threshold — promoting to `#[inline(always)]` is essentially redundant in this build profile. The slight directional improvement on `reopen_10k` (-0.21% to -0.70%) is interesting but reopen doesn't call `flush_scratch` (no mutations on the read path), so this must be a codegen-layout side effect (different symbol ordering after the annotation change shifted something on the read path closer in icache). Under the -1.5% gate either way.
+- **Follow-ups / dead ends:** Closed: `#[inline(always)]` on `flush_scratch`. Closed (by extension): `#[inline(always)]` on the other already-`#[inline]`d helpers (`maybe_compact`, the accessors) — same logic, the inliner already inlines them. Open: `#[inline(always)]` on `insert`/`remove`/`modify` (the public mutation entry points) — might let LLVM see the whole 10k-iteration bench loop as a single function and apply tighter optimization. Open: `#[cold]` placed on the slow-path branch *inside* `maybe_compact` (the `compact()` invocation) via an outlined helper — different shape from the failed `mark-compact-as-cold`, and the bench doesn't exercise it so this is purely a codegen-layout knob with low expected payoff.
 
 ### 2026-05-14 — lazy-bufwriter-allocation
 
