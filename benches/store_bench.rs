@@ -1,14 +1,20 @@
 //! Custom benchmark harness for `IndexMapStore`.
 //!
 //! Run with `cargo bench`. Each invocation:
-//!   1. Warms up each scenario (default 3 iterations) — discards timings.
-//!   2. Collects N timed samples (default 21, odd so the median is unambiguous).
+//!   1. Warms up each scenario (default 5 iterations) — discards timings.
+//!   2. Collects N timed samples (default 1001, odd so the median is unambiguous).
 //!   3. Reports min / p50 / p90 per scenario.
 //!   4. Loads `bench_results.json` (at the crate root, survives `cargo clean`)
 //!      from the previous run, prints the Δ against the current p50, then
 //!      overwrites the file with the new run.
 //!
-//! Tune via env: `BENCH_WARMUP`, `BENCH_SAMPLES`, `BENCH_THRESHOLD` (percent).
+//! Tune via env:
+//!   * `BENCH_WARMUP`, `BENCH_SAMPLES`, `BENCH_THRESHOLD` (percent).
+//!   * `BENCH_FILTER` — substring filter on scenario names.
+//!   * `BENCH_BASELINE` — path to a results JSON used as the "previous" reference
+//!     instead of `bench_results.json`. The current run is still written to
+//!     `bench_results.json`. Used by `/optimize` to compare three independent
+//!     runs against one fixed pre-change snapshot.
 //!
 //! `p50` is the consistency anchor — robust to OS jitter — and the Δ tag flags
 //! `[+]` improvement, `[-]` regression, `[~]` within noise threshold so you can
@@ -137,7 +143,10 @@ fn results_path() -> PathBuf {
 }
 
 fn load_previous() -> Option<Results> {
-    let p = results_path();
+    let p = match env::var("BENCH_BASELINE") {
+        Ok(s) if !s.is_empty() => PathBuf::from(s),
+        _ => results_path(),
+    };
     let s = fs::read_to_string(&p).ok()?;
     serde_json::from_str(&s).ok()
 }
@@ -209,15 +218,15 @@ fn main() {
     let warmup: usize = env::var("BENCH_WARMUP")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3);
+        .unwrap_or(5);
     let samples: usize = env::var("BENCH_SAMPLES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(21);
+        .unwrap_or(1001);
     let threshold: f64 = env::var("BENCH_THRESHOLD")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(3.0);
+        .unwrap_or(2.0);
     let filter = env::var("BENCH_FILTER").ok();
 
     let mut current = Results {
