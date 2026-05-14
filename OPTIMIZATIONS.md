@@ -14,12 +14,34 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | skip-path-exists-probe | src/lib.rs | LOW | INCONCLUSIVE | Saved one stat syscall per open; reopen_10k drift -0.2% to -0.8%, all within noise; reverted |
 | 2026-05-14 | presize-replay-payload-vec | src/lib.rs | LOW | INCONCLUSIVE | All scenarios within ±1.5% noise; reverted |
 | 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — slurp-log-into-vec
+
+- **Hypothesis:** Reading the whole log into a `Vec<u8>` via `File::read_to_end` and iterating in-memory over length-prefixed slices removes per-record `BufReader` refills and the memcpy into a separate `payload` buffer that the streaming path needed; `bincode::deserialize` can borrow the slice directly.
+- **Risk:** LOW (no public API change, no new dependency — `BufReader` import dropped because it's no longer used).
+- **Files touched:** `src/lib.rs` (`open_with`, removed unused `BufReader` import).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.36 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 629.80 us
+  - modify_10k: 5.11 ms
+  - reopen_10k: 208.65 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.12% / -0.13% / -0.11%   (within noise)
+  - insert_2k_strings: -0.16% / +0.43% / +0.29%   (within noise)
+  - lookup_100k:      +0.04% / +0.22% / +0.17%   (within noise)
+  - modify_10k:       -1.10% / -0.34% / -1.10%   (within noise)
+  - reopen_10k:       -10.96% / -10.97% / -10.43%   (KEPT — all three < -3%)
+- **Verdict:** KEPT.
+- **Why:** reopen_10k drops from ~209us to ~188us, reproduced to within 0.5% across three independent runs against the fixed pre-change baseline. The win comes from eliminating per-record `memcpy buffer→payload Vec` and the `BufReader` refill/copy overhead — `bincode::deserialize` now operates on a borrowed slice straight from the slurped buffer. Memory profile changes (one Vec sized to the log) but for our workloads logs are bounded and well under available RAM; for an extremely large log a streaming path may be worth adding back as a fallback.
+- **Follow-ups / dead ends:** Closed: `BufReader`-based replay. Open: memory-mapping the log instead of slurping (would skip the userspace copy too — but `mmap` is HIGH risk per the skill). Open: hand-rolled fixed-prefix codec for primitive K/V — bincode now dominates the per-record cost; replacing it with a u64-LE encoder would change the on-disk format and so is a separate, MEDIUM-risk hypothesis.
 
 ### 2026-05-14 — skip-path-exists-probe
 

@@ -22,7 +22,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fs::{self, File, OpenOptions};
 use std::hash::Hash;
-use std::io::{self, BufReader, BufWriter, ErrorKind, Read, Write};
+use std::io::{self, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
 const LEN_BYTES: usize = 4;
@@ -102,7 +102,7 @@ where
         let mut total_records: u64 = 0;
 
         if path.exists() {
-            let file = File::open(&path)?;
+            let mut file = File::open(&path)?;
             let total_on_disk = file.metadata()?.len();
             // Hint the IndexMap capacity from the on-disk size so the replay
             // loop avoids the geometric grow-rehash sequence. 24 bytes/record
@@ -112,21 +112,24 @@ where
             if capacity_hint > 0 {
                 map.reserve(capacity_hint);
             }
-            let mut reader = BufReader::new(file);
-            let mut len_buf = [0u8; LEN_BYTES];
-            let mut payload: Vec<u8> = Vec::new();
-            loop {
-                match reader.read_exact(&mut len_buf) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
-                    Err(e) => return Err(e),
-                }
-                let len = u32::from_le_bytes(len_buf) as usize;
-                payload.resize(len, 0);
-                if reader.read_exact(&mut payload).is_err() {
+            // Slurp the log so the replay loop can borrow length-prefixed
+            // payload slices directly (no per-record memcpy into a payload
+            // buffer, no BufReader refills).
+            let mut buf: Vec<u8> = Vec::with_capacity(total_on_disk as usize);
+            file.read_to_end(&mut buf)?;
+            drop(file);
+
+            let mut offset: usize = 0;
+            while offset + LEN_BYTES <= buf.len() {
+                let len = u32::from_le_bytes(
+                    buf[offset..offset + LEN_BYTES].try_into().unwrap(),
+                ) as usize;
+                let payload_start = offset + LEN_BYTES;
+                let payload_end = payload_start + len;
+                if payload_end > buf.len() {
                     break;
                 }
-                let rec: LogOwned<K, V> = match bincode::deserialize(&payload) {
+                let rec: LogOwned<K, V> = match bincode::deserialize(&buf[payload_start..payload_end]) {
                     Ok(r) => r,
                     Err(_) => break,
                 };
@@ -140,6 +143,7 @@ where
                 }
                 valid_len += (LEN_BYTES + len) as u64;
                 total_records += 1;
+                offset = payload_end;
             }
 
             if valid_len != total_on_disk {
