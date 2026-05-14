@@ -15,6 +15,9 @@
 //!     instead of `bench_results.json`. The current run is still written to
 //!     `bench_results.json`. Used by `/optimize` to compare three independent
 //!     runs against one fixed pre-change snapshot.
+//!   * `BENCH_PRINT_ONLY` — if set (and not "0"), skip benchmarking and just
+//!     reprint the last results from `bench_results.json` (comparing against
+//!     `BENCH_BASELINE` if set). Does not overwrite the JSON.
 //!
 //! `p50` is the consistency anchor — robust to OS jitter — and the Δ tag flags
 //! `[+]` improvement, `[-]` regression, `[~]` within noise threshold so you can
@@ -228,6 +231,27 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(2.0);
     let filter = env::var("BENCH_FILTER").ok();
+    let print_only = env::var("BENCH_PRINT_ONLY")
+        .ok()
+        .is_some_and(|s| !s.is_empty() && s != "0");
+
+    if print_only {
+        let current: Results = match fs::read_to_string(results_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Some(r) => r,
+            None => {
+                eprintln!(
+                    "BENCH_PRINT_ONLY: no {} to read",
+                    results_path().display()
+                );
+                return;
+            }
+        };
+        print_table(&current, load_previous().as_ref(), threshold);
+        return;
+    }
 
     let mut current = Results {
         timestamp_unix: now_unix(),
