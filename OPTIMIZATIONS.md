@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | truncate-scratch-preserve-len-prefix | src/lib.rs | LOW | INCONCLUSIVE | Replaced `clear + extend(&[0;4]) + push(tag)` with `truncate(LEN_BYTES) + push(tag)` after pre-seeding scratch with 4 zero bytes at construction — reopen_10k drifts consistently -1.62% / -1.14% / -0.86% (only run 1 clears -1.5%; gate requires all 3) and insert_2k_strings -0.49% / -0.19% / -0.31% (directional, well under gate); reverted |
 | 2026-05-14 | combine-len-prefix-and-tag-extend | src/lib.rs | LOW | INCONCLUSIVE | Fused `extend_from_slice(&[0;4])` + `push(tag)` into one `extend_from_slice(&[0,0,0,0,tag])` across insert/remove/modify — all scenarios within ±1.2% noise; modify_10k -0.71%/+0.01%/+0.16%, reopen_10k -0.59%/-1.20%/-0.24% (directional but neither clears -1.5% gate); reverted |
 | 2026-05-14 | inline-always-flush-scratch | src/lib.rs | LOW | INCONCLUSIVE | Promoted `#[inline]` → `#[inline(always)]` on `flush_scratch` (targeted follow-up from inline-hot-path-functions) — all scenarios within ±1% noise; reopen_10k drifts -0.21% / -0.65% / -0.70% (directional but under -1.5% gate); ThinLTO already inlined flush_scratch as expected, the `always` only forces what was already happening |
 | 2026-05-14 | lazy-bufwriter-allocation | src/lib.rs | LOW | REVERTED | Deferred the 1MB BufWriter mmap until first mutation via `log: Option<BufWriter>` + `file: Option<File>` — reopen_10k regressed +0.95% / +1.56% / +2.89% (run 1 over +1.5% guard); the extra struct field + per-write `is_none()` branch + Drop-time discrimination outweighed the saved mmap, and the struct grew enough that codegen layout shifted unfavorably on the read path |
@@ -34,6 +35,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — truncate-scratch-preserve-len-prefix
+
+- **Hypothesis:** Explicit follow-up from `combine-len-prefix-and-tag-extend`. Pre-seed `scratch` with `LEN_BYTES` zero bytes once at struct construction, then in each mutation use `truncate(LEN_BYTES) + push(tag)` instead of `clear + extend(&[0;4]) + push(tag)`. Saves a 4-byte memcpy (the zero-fill of the length prefix) and one length-store per mutation, ~5–7 cycles each — over 10k mutations, ~50–70us, in the ballpark of clearing the -1.5% gate on `modify_10k`. The first 4 bytes of `scratch` survive between calls — they hold the previous record's length, which is fine because `flush_scratch` overwrites them with the new length before each write.
+- **Risk:** LOW (no API/format/dep change; semantic equivalence verified — the prefix bytes are always overwritten before they're emitted, and all 12 integration tests pass including the torn-tail recovery cases that exercise the on-disk layout).
+- **Files touched:** `src/lib.rs` (`open_with` scratch construction; `insert`, `remove`, `modify` write-preludes).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.06% / -1.03% / +0.14%   (within noise — run 2 only)
+  - insert_2k_strings: -0.49% / -0.19% / -0.31%   (within noise — small consistent directional improvement, well under gate)
+  - lookup_100k:      -0.15% / +0.29% / +0.20%   (within noise)
+  - modify_10k:       -0.28% / +0.01% / -0.08%   (within noise — flat, the targeted scenario didn't move)
+  - reopen_10k:       -1.62% / -1.14% / -0.86%   (run 1 clears the -1.5% gate, runs 2 and 3 don't — KEPT requires *all three* runs ≤ -1.5%, so this is INCONCLUSIVE)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** Reopen_10k trends consistently directionally negative (-1.62 / -1.14 / -0.86) but only one of three runs clears the -1.5% gate. The other write-path scenarios (`insert_10k_u64`, `modify_10k`) sat flat. Two observations: (1) reopen doesn't call any of the modified functions (no mutations on the read path), so the reopen improvement is again a codegen-layout side effect — the diff shifted symbol ordering and put something on the read path slightly closer in icache. (2) The targeted scenario `modify_10k` showed almost zero change, suggesting the per-call savings on the write prelude are below the noise floor and LLVM's existing optimization of `Vec::push`/`extend_from_slice` is already close to optimal. Conservative gate (`KEPT` requires all 3 runs ≤ -1.5%) holds — directional but unreliable wins shouldn't ship.
+- **Follow-ups / dead ends:** Closed: `truncate(LEN_BYTES)` as a substitute for `clear + extend(&[0;LEN_BYTES])`. Closed (by extension): further refinement of the scratch-prelude pattern — the optimizer already collapses these calls and the actual bottleneck is elsewhere (bincode dispatch + IndexMap insertion). Open: replacing the bincode call entirely on the write path with a hand-rolled fixed-prefix codec for primitive K/V — MEDIUM risk because it changes the on-disk format. Open: the reopen-layout-drift effect is real — three different no-op-looking edits (`inline-always-flush-scratch`, `combine-len-prefix-and-tag-extend`, this one) all moved reopen_10k slightly negative without changing the read path. Suggests there's icache pressure on reopen that a deliberate layout intervention (`#[link_section]` ordering, PGO) could exploit — but those need build-system support and don't fit the single-file-edit model.
 
 ### 2026-05-14 — combine-len-prefix-and-tag-extend
 
