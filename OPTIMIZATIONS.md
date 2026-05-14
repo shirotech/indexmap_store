@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | construct-IndexMap-with-capacity-direct | src/lib.rs | LOW | REVERTED | Replaced `IndexMap::new() + map.reserve(capacity_hint)` with single-step `IndexMap::with_capacity_and_hasher(capacity_hint, Default::default())` — reopen_10k regressed +3.56% / +3.66% / +4.10% across all 3 runs (~5us on 119us baseline); the unconditional `with_capacity_and_hasher(0, ...)` for empty-file opens added allocation work the prior `IndexMap::new()` skipped, AND the moved-out `let capacity_hint` line shifted symbol layout; the original two-step pattern (`new()` always + conditional `reserve()`) was locally optimal |
 | 2026-05-14 | compact-batch-len-prefix-and-payload | src/lib.rs | LOW | INCONCLUSIVE | Applied the KEPT `batch-len-prefix-and-payload` pattern (one `write_all` per record by filling length prefix in scratch) to `compact()`'s rewrite loop — all scenarios within ±0.75% noise (reopen_10k -0.74% / -0.22% / -0.52%, insert_2k_strings +0.68% / +0.41% / +0.15%); bench doesn't exercise compact so this was expected to be flat; reverted |
 | 2026-05-14 | uninline-mutation-entry-points | src/lib.rs | LOW | REVERTED | Removed the `#[inline]` annotation from `insert`/`remove`/`modify` to test whether ThinLTO's heuristic would *not* inline them and leave the bodies in lib.rs's text segment (motivated by `inline-always-insert-remove-modify`'s +9% reopen regression from over-inlining) — reopen_10k still regressed +6.14% / +6.05% / +5.65% across all 3 runs; both directions of the inline knob hurt reopen, confirming the existing `#[inline]` (heuristic-friendly) is locally optimal; write paths flat |
 | 2026-05-14 | inline-always-insert-remove-modify | src/lib.rs | LOW | REVERTED | Promoted `#[inline]` → `#[inline(always)]` on the three public mutation entry points — reopen_10k regressed +9.33% / +9.39% / +9.23% across all 3 runs (~11us on a 119us baseline) despite reopen calling none of those functions; the larger inlined bodies in the bench harness's u64-monomorphisation shifted symbol layout enough to push something off the read path's icache; clear example of how `#[inline(always)]` on hot public APIs can hurt unrelated cold-ish paths through codegen-layout side effects |
@@ -38,6 +39,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — construct-IndexMap-with-capacity-direct
+
+- **Hypothesis:** Collapsing the two-step `IndexMap::new() + map.reserve(capacity_hint)` into a single-step `IndexMap::with_capacity_and_hasher(capacity_hint, Default::default())` would avoid the redundant capacity-check + dual-allocation pattern (new allocates zero, reserve grows). For the reopen_10k bench the hint is non-zero, so `with_capacity_and_hasher` allocates once for exactly the needed size — same end state, fewer hashbrown internal branches.
+- **Risk:** LOW (refactor, semantically equivalent — same final map capacity, same hasher).
+- **Files touched:** `src/lib.rs` (`open_with` — IndexMap construction and the moved-up `capacity_hint` calculation).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.12% / +0.28% / -0.06%   (within noise — write path flat)
+  - insert_2k_strings: -0.10% / +0.01% / -0.07%   (within noise)
+  - lookup_100k:      +0.13% / -0.08% / +0.22%   (within noise)
+  - modify_10k:       -0.19% / -0.24% / -0.59%   (within noise — small directional improvement, under gate)
+  - reopen_10k:       +3.56% / +3.66% / +4.10%   (REVERTED — all three over +1.5% guard, ~5us regression on a 119us baseline)
+- **Verdict:** REVERTED.
+- **Why:** Two compounding factors. (1) Subtle semantic shift: the old code constructed `IndexMap::new()` *unconditionally* (zero-alloc) then called `reserve()` *only if* `capacity_hint > 0`. The new code calls `with_capacity_and_hasher(capacity_hint, ...)` unconditionally — even for empty-file opens where capacity_hint == 0, this passes through hashbrown's capacity logic and does a hashmap-init even at zero capacity (creating an empty hashbrown table). It's tiny per op, but the call site is now reached for every open instead of conditionally. (2) Source-layout drift: moving `capacity_hint`'s declaration out of the `if total_on_disk > 0` block changed the function body's structure enough that ThinLTO produced a different symbol ordering, and the read path's icache layout suffered. The +3.5–4.1% reopen regression is large (~5us) and stable across runs, indicating a real codegen layout effect rather than measurement noise. The original two-step pattern (always `new()`, conditionally `reserve()`) is locally optimal.
+- **Follow-ups / dead ends:** Closed: collapsing IndexMap construction + reserve into one call. Closed (by extension): any structural refactor of `open_with` that moves declarations across the `if total_on_disk > 0` boundary — codegen layout is delicately tuned here. Open: PGO would let the linker re-order functions based on measured hotness and shield the codebase from these layout-side-effects of source edits — but it needs build-system support outside the single-file-edit model and applies to a single workload at a time. Open: explicit `#[link_section]` placement of the reopen-hot path's functions to make them position-stable across source edits — same tooling caveat. Final observation across attempts 7–10: this codebase's bench numbers are now dominated by codegen layout, and source-level micro-optimizations are at or below the gate's noise floor. The cleanest path forward is either (a) a measurable workload change (foldhash hasher, hand-rolled primitive codec, snapshot file) that requires HIGH-risk authorization, or (b) build-system tooling (PGO, symbol ordering) outside the `/optimize` model.
 
 ### 2026-05-14 — compact-batch-len-prefix-and-payload
 
