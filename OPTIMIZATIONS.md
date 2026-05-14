@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | mmap-slurp-buffer-min-1mb | src/lib.rs | LOW | REVERTED | `Vec::with_capacity(total_on_disk).max(1MB)` regressed reopen_10k +4.86% to +5.04% across all 3 runs — the larger mmap region the kernel has to track (1MB) costs more on every reopen than the 240KB slurp it replaced, while only the first 240KB ever gets touched |
 | 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed |
 | 2026-05-14 | mark-compact-as-cold | src/lib.rs | LOW | REVERTED | `#[cold]` on `compact()` regressed reopen_10k +3.6% to +4.0% across all 3 runs — binary-layout side effect hurt icache locality on the read path |
 | 2026-05-14 | inline-enum-tag-u8 | src/lib.rs | MEDIUM | INCONCLUSIVE | Replaced bincode 4-byte enum tag with manual 1-byte tag + bincode tuple; saved 3 bytes/record but all scenarios within ±2% noise; modify_10k -1.1% to -1.4% under -3% gate; reverted |
@@ -29,6 +30,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — mmap-slurp-buffer-min-1mb
+
+- **Hypothesis:** Rounding the replay slurp Vec's capacity to at least 1MB (`Vec::with_capacity((total_on_disk as usize).max(1 << 20))`) would force the allocation consistently through `mmap` the way `bufwriter-capacity-1mb` did — for our 240KB log the static glibc threshold is crossed but the dynamic `M_MMAP_THRESHOLD` can drift higher under repeated bench allocations, occasionally routing the slurp through the heap. Forcing ≥1MB should pin it on the mmap path the same way the BufWriter trick did.
+- **Risk:** LOW (one-line capacity bump in `open_with`; no API change, no new deps, unused pages stay lazy).
+- **Files touched:** `src/lib.rs` (`open_with` — the `Vec::with_capacity(total_on_disk as usize)` site only).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.13% / -0.35% / -0.15%   (within noise)
+  - insert_2k_strings: -0.06% / +0.15% / +0.15%   (within noise)
+  - lookup_100k:      -0.23% / -0.17% / +0.14%   (within noise)
+  - modify_10k:       -0.07% / +0.09% / +0.04%   (within noise)
+  - reopen_10k:       +4.86% / +5.04% / +4.94%   (REVERTED — all three over +1.5% guard, ~5–6us regression on a 119us baseline)
+- **Verdict:** REVERTED.
+- **Why:** The slurp Vec is materially different from the BufWriter case that benefited from rounding to 1MB: BufWriter's backing buffer is allocated-but-untouched on the read-only reopen path, so the kernel never faults its pages and the mmap cost is purely the syscall + VMA insert (which is small enough that the 1MB version wins through fewer allocator slowdowns elsewhere). The slurp Vec, by contrast, is *immediately* filled by `read_to_end` with ~240KB of bytes — so we touch the first 240KB regardless of the capacity. Asking the kernel to track a 1MB VMA when we use 240KB of it costs ~5us more per reopen than tracking a 240KB VMA, and there is no compensating win because the prior 240KB allocation was already crossing the static 128KB mmap threshold (i.e., already on the mmap path most of the time). Consistent regression (~5%, ~6us) across all three runs makes this clearly worse, not noise.
+- **Follow-ups / dead ends:** Closed: rounding the slurp Vec capacity up to force mmap. Closed (by extension): the general "make every per-open allocation ≥1MB so they all sit on the mmap path" pattern — works only for allocations whose pages are NOT touched (like BufWriter), not for ones we read into. Open: dropping the slurp Vec entirely in favor of memory-mapping the log file directly (would eliminate both the allocation AND the userspace `read_to_end` copy) — HIGH risk (`mmap` per the skill's risk tags). Open: streaming the replay through a smaller fixed-size buffer (e.g., 64KB) read in a loop — opposite direction, would let the kernel/page-cache do the reading without our Vec staging; would change the bincode call from `deserialize(borrowed slice)` to a copy out of the streaming buffer, so could lose more than it saves on the per-record path.
 
 ### 2026-05-14 — bundle-inconclusive-attempts
 
