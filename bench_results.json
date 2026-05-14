@@ -1,0 +1,45 @@
+{
+  "timestamp_unix": 1778782443,
+  "benchmarks": {
+    "insert_10k_u64": {
+      "samples": 21,
+      "min_ns": 5261877,
+      "p50_ns": 5360804,
+      "p90_ns": 5443740,
+      "max_ns": 5825190,
+      "mean_ns": 5401831
+    },
+    "insert_2k_strings": {
+      "samples": 21,
+      "min_ns": 5362697,
+      "p50_ns": 5474638,
+      "p90_ns": 5538429,
+      "max_ns": 5563215,
+      "mean_ns": 5465169
+    },
+    "lookup_100k": {
+      "samples": 21,
+      "min_ns": 626963,
+      "p50_ns": 631491,
+      "p90_ns": 636561,
+      "max_ns": 644616,
+      "mean_ns": 631905
+    },
+    "modify_10k": {
+      "samples": 21,
+      "min_ns": 4998600,
+      "p50_ns": 5103818,
+      "p90_ns": 5480459,
+      "max_ns": 5594354,
+      "mean_ns": 5151224
+    },
+    "reopen_10k": {
+      "samples": 21,
+      "min_ns": 330052,
+      "p50_ns": 335082,
+      "p90_ns": 346875,
+      "max_ns": 354118,
+      "mean_ns": 337264
+    }
+  }
+}
