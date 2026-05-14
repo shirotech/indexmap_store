@@ -207,6 +207,7 @@ where
     /// [`IndexMap::insert`] semantics).
     pub fn insert(&mut self, k: K, v: V) -> io::Result<Option<V>> {
         self.scratch.clear();
+        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
         bincode::serialize_into(&mut self.scratch, &LogRef::Insert::<K, V>(&k, &v))
             .map_err(serialize_err)?;
         self.flush_scratch()?;
@@ -226,6 +227,7 @@ where
             return Ok(None);
         }
         self.scratch.clear();
+        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
         bincode::serialize_into(&mut self.scratch, &LogRef::Remove::<K, V>(k))
             .map_err(serialize_err)?;
         self.flush_scratch()?;
@@ -253,6 +255,7 @@ where
         let v_ref: &V = v_mut;
 
         self.scratch.clear();
+        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
         bincode::serialize_into(&mut self.scratch, &LogRef::Insert::<K, V>(k, v_ref))
             .map_err(serialize_err)?;
 
@@ -307,10 +310,12 @@ where
     }
 
     fn flush_scratch(&mut self) -> io::Result<()> {
-        let len = self.scratch.len() as u32;
-        self.log.write_all(&len.to_le_bytes())?;
+        // Callers reserve LEN_BYTES at the front of `scratch`; fill the length
+        // in place so the length-prefix and payload land in a single write.
+        let payload_len = (self.scratch.len() - LEN_BYTES) as u32;
+        self.scratch[..LEN_BYTES].copy_from_slice(&payload_len.to_le_bytes());
         self.log.write_all(&self.scratch)?;
-        self.log_bytes += (LEN_BYTES + self.scratch.len()) as u64;
+        self.log_bytes += self.scratch.len() as u64;
         if self.cfg.sync_on_write {
             self.log.flush()?;
             self.log.get_ref().sync_data()?;
