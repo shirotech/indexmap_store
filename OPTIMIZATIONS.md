@@ -15,6 +15,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | bundle-inconclusive-round-2 | src/lib.rs, Cargo.toml | HIGH | INCONCLUSIVE | Stacked the 5 still-applicable INCONCLUSIVE attempts that landed *after* `bundle-inconclusive-attempts` (round 1): (1) bincode-2-upgrade-new-config (HIGH: dep 1.3→2.0.1, new typed Configuration, fixed-int), (2) compact-batch-len-prefix-and-payload (compact loop pre-seeds buf with LEN_BYTES + single write_all per record), (3) truncate-scratch-preserve-len-prefix (constructor pre-seeds scratch with [0;LEN_BYTES]; insert/remove/modify use `truncate(LEN_BYTES) + push(tag)`), (4) inline-always-flush-scratch (`#[inline]` → `#[inline(always)]`), (5) bufwriter-capacity-2mb (default 1MB → 2MB). Excluded `combine-len-prefix-and-tag-extend` as subsumed by (3). Result: no scenario regressed past +1.5% (max +0.47% on reopen_10k), but neither KEPT path clears: deep-win fails (only insert_10k_u64 hit -1.41% once, then -0.56% / -0.24%); broad-win fails because reopen_10k went *positive* in 2 of 3 runs (+0.43% / -0.44% / +0.47%) — opposite of round-1's reopen -1.56% to -2.02%; the layout interactions of round-2's 5 changes don't compose like round-1's did. INCONCLUSIVE — reverted |
 | 2026-05-14 | bincode-2-upgrade-new-config | src/lib.rs, Cargo.toml | HIGH | INCONCLUSIVE | Upgraded bincode 1.3 → 2.0.1 using the new typed `Configuration<LittleEndian, Fixint, NoLimit>` API (built via `bincode::config::standard().with_fixed_int_encoding().with_little_endian().with_no_limit()` — NOT `legacy()`; fixed-int chosen to preserve byte-compat with bincode 1.x defaults and avoid the known +65% varint reopen regression) and migrated all 4 `serialize_into` callsites to `bincode::serde::encode_into_std_write(...)` and both `deserialize` callsites to `bincode::serde::decode_from_slice(...)` — initial 3-run gate tripped REVERTED on lookup_100k +1.51% in run 3, but a follow-up 3 runs (4/5/6) showed lookup_100k in [-0.09%, +0.31%], confirming the +1.51% was an isolated noise spike; reclassified REVERTED → INCONCLUSIVE; even discounting the spike, neither KEPT gate is satisfied: no scenario clears -1.5% reliably (best is insert_10k_u64 -1.03% / -1.35% on 2 of 6) and broad-win fails because modify_10k drifts both ways (-0.39% to +0.22%) and run-5 reopen_10k spiked +1.02%; user-authorized HIGH-risk dependency swap; ~-0.5% directional improvement on codec-touching scenarios is real but below the noise floor |
 | 2026-05-14 | construct-IndexMap-with-capacity-direct | src/lib.rs | LOW | REVERTED | Replaced `IndexMap::new() + map.reserve(capacity_hint)` with single-step `IndexMap::with_capacity_and_hasher(capacity_hint, Default::default())` — reopen_10k regressed +3.56% / +3.66% / +4.10% across all 3 runs (~5us on 119us baseline); the unconditional `with_capacity_and_hasher(0, ...)` for empty-file opens added allocation work the prior `IndexMap::new()` skipped, AND the moved-out `let capacity_hint` line shifted symbol layout; the original two-step pattern (`new()` always + conditional `reserve()`) was locally optimal |
 | 2026-05-14 | compact-batch-len-prefix-and-payload | src/lib.rs | LOW | INCONCLUSIVE | Applied the KEPT `batch-len-prefix-and-payload` pattern (one `write_all` per record by filling length prefix in scratch) to `compact()`'s rewrite loop — all scenarios within ±0.75% noise (reopen_10k -0.74% / -0.22% / -0.52%, insert_2k_strings +0.68% / +0.41% / +0.15%); bench doesn't exercise compact so this was expected to be flat; reverted |
@@ -41,6 +42,51 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT (deep-win) | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — bundle-inconclusive-round-2
+
+- **Hypothesis:** A second-round stack of every INCONCLUSIVE attempt that landed *after* the first stacking attempt `bundle-inconclusive-attempts` (KEPT, deep-win). Round 1 merged 4 attempts and cleared the -1.5% gate on reopen_10k. The thinking: round 1's success suggests stacking can additively expose signal that each attempt individually buried in noise — try the same pattern on round-2 INCONCLUSIVEs. The 5 merged:
+  1. **bincode-2-upgrade-new-config** (HIGH risk: dep version swap, user-authorized) — bincode 1.3 → 2.0.1, new typed `Configuration<LittleEndian, Fixint, NoLimit>` API (NOT `legacy()`), all 4 `serialize_into` callsites migrated to `bincode::serde::encode_into_std_write`, both `deserialize` callsites migrated to `bincode::serde::decode_from_slice`, `serialize_err` signature updated to `bincode::error::EncodeError`.
+  2. **compact-batch-len-prefix-and-payload** (LOW) — `compact()` rewrite loop now pre-seeds `buf` with `LEN_BYTES` zero bytes outside the loop and uses `truncate(LEN_BYTES) + push(tag)` per record, filling the length prefix in place and emitting length + payload via a single `write_all`.
+  3. **truncate-scratch-preserve-len-prefix** (LOW) — `open_with` pre-seeds `scratch` with `[0u8; LEN_BYTES]` at construction; `insert`/`remove`/`modify` use `truncate(LEN_BYTES) + push(tag)` instead of `clear + extend(&[0;4]) + push(tag)`. The first 4 bytes survive between calls; `flush_scratch` always overwrites them before the write.
+  4. **inline-always-flush-scratch** (LOW) — `#[inline]` → `#[inline(always)]` on `flush_scratch`.
+  5. **bufwriter-capacity-2mb** (LOW) — `StoreConfig::default().buf_capacity` from `1024 * 1024` to `2 * 1024 * 1024`.
+  
+  Excluded `combine-len-prefix-and-tag-extend` (round-2 INCONCLUSIVE #6) as subsumed by #3 — both alter the same scratch byte sequence; truncate-scratch is the stronger directional bet on reopen.
+- **Risk:** HIGH (bundles a dependency version upgrade, which the skill rubric flags as HIGH; user explicitly authorized the bincode 2 upgrade in the immediately-preceding attempt).
+- **Files touched:** `Cargo.toml` (`bincode = "1.3"` → `bincode = { version = "2.0.1", features = ["serde"] }`); `src/lib.rs` (added `bincode::config::*` imports + `BINCODE_CONFIG` const; updated 4 serialize callsites + 2 deserialize callsites; updated `serialize_err` signature; pre-seeded scratch in `open_with`'s constructor return; rewrote insert/remove/modify write-preludes to `truncate(LEN_BYTES) + push(tag)`; rewrote `compact()` loop's `buf` to mirror flush_scratch's pattern; `#[inline]` → `#[inline(always)]` on `flush_scratch`; `buf_capacity` default 1MB → 2MB).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -1.41% / -0.56% / -0.24%   (run 1 nearly clears -1.5% gate; runs 2/3 don't — gate requires all 3, so no deep-win on this scenario)
+  - insert_2k_strings: -0.42% / -0.45% / -0.48%   (extremely consistent small negative drift, same tight signal as bincode-2-upgrade-new-config alone — but doesn't clear ≤-0.5% for broad-win)
+  - lookup_100k:      -0.18% / +0.16% / -0.03%   (flat — noise band, no codec touchpoint)
+  - modify_10k:       -0.13% / +0.03% / -0.18%   (flat — gone from round-1's -1.24% to -1.69% directional improvement back to noise; the round-2 changes aren't reinforcing modify the way round-1's hot-path inline annotations did)
+  - reopen_10k:       +0.43% / -0.44% / +0.47%   (the killer — went *positive* in 2 of 3 runs, opposite direction from individual INCONCLUSIVEs which mostly drifted reopen slightly negative; broad-win sub-guard fails)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** Verdict logic walks through cleanly:
+  - **REVERTED gate**: max positive Δ is +0.47% (reopen_10k R3), well under the +1.5% guard. PASS.
+  - **Deep-win**: requires ≥1 scenario ≤-1.5% in *all* 3 runs. The best is insert_10k_u64's -1.41% / -0.56% / -0.24% — one run almost clears, two are far from it. FAIL.
+  - **Broad-win**: requires ALL scenarios ≤-0.5% in all 3 runs AND no scenario >+0.1% in any run. insert_10k_u64 R3 -0.24% breaks ≤-0.5%; insert_2k_strings -0.42% is just above the threshold; modify_10k is flat; reopen R1/R3 at +0.43% / +0.47% blows the +0.1% sub-guard. FAIL.
+  - **INCONCLUSIVE** (default).
+- **Why the stack didn't compose like round-1**: Round 1 (`bundle-inconclusive-attempts`, KEPT) got reopen_10k -1.56% to -2.02% from 4 changes whose individual INCONCLUSIVEs all moved reopen *negative* in at least 2 of 3 runs each. The round-2 inputs are weaker reopen movers individually:
+  - `bincode-2-upgrade-new-config`: reopen -0.78% to -1.08% (3 runs), then -0.45% to -0.61% w/ +1.02% in rerun
+  - `truncate-scratch-preserve-len-prefix`: reopen -0.86% / -1.14% / -1.62%
+  - `compact-batch-len-prefix-and-payload`: reopen -0.22% / -0.52% / -0.74%
+  - `inline-always-flush-scratch`: reopen -0.21% / -0.65% / -0.70%
+  - `bufwriter-capacity-2mb`: reopen -0.68% / +0.61% / -0.61% (already showed positive variance)
+  - But stacked, reopen lands at +0.43% / -0.44% / +0.47%. The composition appears to *cancel* rather than reinforce — most likely codegen-layout side effects from the 5 simultaneous edits conflict with one another (the bincode 2 monomorphisations are bigger, the `#[inline(always)]` forces more code into the bench harness, the truncate-scratch change shifts struct construction layout, and the 2MB BufWriter widens the VMA). Round 1's contributors were more orthogonal: they touched different layers (codec format, struct attributes, file-open API, function inlining) without competing for the same icache footprint.
+- **Follow-ups / dead ends:**
+  - **Closed:** stacking all of round-2's INCONCLUSIVEs together. The composition is non-additive; doesn't ship.
+  - **Closed (by extension):** any subset of these 5 that includes `bincode-2-upgrade-new-config` along with `truncate-scratch-preserve-len-prefix` — the two largest layout-shifting changes (the bincode 2 monomorphisation expansion + the constructor pre-seed reorder) seem to be the ones cancelling each other on reopen. Worth confirming with a smaller stack if a future invocation targets these specifically.
+  - **Open:** a smaller round-2 stack that excludes the bincode dep upgrade — i.e., (truncate-scratch + compact-batch + inline-always-flush-scratch + buf 2MB) without the bincode 2 swap. The bincode 2 upgrade is the riskiest layout change in this stack; isolating its codegen impact would clarify whether it's the cancellation source.
+  - **Open:** a much narrower round-2 pair: just (truncate-scratch + bufwriter-2mb), the two most-orthogonal round-2 INCONCLUSIVEs that still target reopen. Speculative — round-2's individual signals are weaker than round-1's were, so even an orthogonal subset may stay INCONCLUSIVE.
+  - **Closed (re-affirmed):** the meta-observation across all of round-2 — this crate's bench numbers are at the codegen-layout noise floor for source-level micro-optimization. Future productive paths likely require workload changes (a codec-bypass for primitive K/V) or build-system tooling (PGO, explicit symbol ordering), not more single-file edits.
+  - **Bench-harness diagnostic:** `insert_2k_strings` reliably drifts -0.33% to -0.60% on every bincode-2-touching attempt (3 runs of round-2 here: -0.42% / -0.45% / -0.48%; 6 runs of bincode-2 alone: -0.33% to -0.60%). This is the tightest, most reproducible signal across all recent attempts and points to bincode 2's encoder being incrementally faster on String — but it's below every gate. If the bench harness gained a scenario that does more bincode encode work (e.g., insert_100k_strings or insert_10k_struct), this signal might clear a gate cleanly.
 
 ### 2026-05-14 — bincode-2-upgrade-new-config
 
