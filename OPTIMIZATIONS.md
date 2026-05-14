@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed |
 | 2026-05-14 | mark-compact-as-cold | src/lib.rs | LOW | REVERTED | `#[cold]` on `compact()` regressed reopen_10k +3.6% to +4.0% across all 3 runs — binary-layout side effect hurt icache locality on the read path |
 | 2026-05-14 | inline-enum-tag-u8 | src/lib.rs | MEDIUM | INCONCLUSIVE | Replaced bincode 4-byte enum tag with manual 1-byte tag + bincode tuple; saved 3 bytes/record but all scenarios within ±2% noise; modify_10k -1.1% to -1.4% under -3% gate; reverted |
 | 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold |
@@ -28,6 +29,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — bundle-inconclusive-attempts
+
+- **Hypothesis:** Stacking all still-applicable INCONCLUSIVE attempts in one diff exposes additive signal that each individually buried in ±1.5% noise. The four merged: (1) inline-enum-tag-u8 — manual 1-byte tag + bincode tuple, save 3 bytes/record on Insert and skip serde enum dispatch on replay; (2) inline-hot-path-functions — `#[inline]` on accessors, mutation entry points, `flush_scratch`, `maybe_compact`, `serialize_err`; (3) single-open-for-replay-and-append — one `OpenOptions{read, append, create}` handle for slurp + torn-tail set_len + runtime appends (saves 1–2 open syscalls); (4) skip-path-exists-probe — naturally subsumed by (3), no separate `path.exists()` call. presize-replay-payload-vec was excluded as obsolete: the per-record payload buffer it targeted no longer exists since `slurp-log-into-vec` (KEPT) replaced it with a single up-front Vec already sized to `total_on_disk`. This invocation explicitly bundles multiple hypotheses on user request, deviating from the skill's normal ONE-hypothesis-per-invocation rule.
+- **Risk:** MEDIUM (changes on-disk log format via the 1-byte tag — older logs are unreadable; tests confirmed not to depend on byte-level layout).
+- **Files touched:** `src/lib.rs` (removed `LogRef`/`LogOwned` enums and the `Deserialize` import; added `TAG_INSERT`/`TAG_REMOVE` constants; rewrote `open_with` to a single OpenOptions handle and manual-tag replay; rewrote `insert`/`remove`/`modify`/`compact` write paths to emit tag + bincode tuple; added `#[inline]` to public accessors, mutation entry points, both private helpers, and the free `serialize_err`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.46 ms
+  - lookup_100k: 630.13 us
+  - modify_10k: 5.16 ms
+  - reopen_10k: 121.04 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.04% / -0.15% / -0.08%   (within noise)
+  - insert_2k_strings: +0.30% / +0.57% / +0.43%   (within noise — directional positive but well under +1.5% guard)
+  - lookup_100k:      -0.14% / -0.01% / +0.02%   (within noise)
+  - modify_10k:       -1.44% / -1.69% / -1.24%   (directional improvement; 2 of 3 runs clear -1.5%, run 3 misses by 0.26pp — not a gate-passing scenario but moves in the right direction)
+  - reopen_10k:       -2.02% / -1.80% / -1.56%   (KEPT — all three ≤ -1.5%, gate cleared by 0.06pp on the tightest run)
+- **Verdict:** KEPT.
+- **Why:** `reopen_10k` consistently improves -1.56% to -2.02% across all three runs against the fixed pre-change baseline, clearing the -1.5% improvement gate in every run. No scenario regresses past +1.5% in any run (max +0.57% on `insert_2k_strings`, well within the +1.5% guard). The win is modest — roughly 2us shaved off 121us — and barely clears the gate, which is expected because each individual ingredient was previously within ±1.5% noise. The most plausible contributors on the reopen path are: collapsing the three-open sequence to one handle (saves ~one stat + one extra open syscall, ~5–10us in cold-cache territory, though here the inode is hot in cache); the manual 1-byte tag (3 bytes less to slurp + one fewer serde dispatch path per record); and codegen layout shifts from the inline annotations and the dropped enums. `modify_10k` drifted directionally positive across all three runs (-1.24% to -1.69%) — close to gate-clearing — which hints at a real but small write-path benefit from the inlined hot-path attributes and the simpler tag path; doesn't quite clear the bar but is consistent with the inline-enum-tag-u8 entry's earlier observation of "modify_10k -1.1% to -1.4%" individually. The 4-byte → 1-byte tag is the only on-disk format change; tests verified semantic correctness end-to-end (persistence_across_reopen, recovers_from_torn_tail, recovers_from_truncated_payload all pass — the truncated-payload test still hits the `len == 0` and bad-tag early-out paths). The new `bench_results.json` from run 3 becomes the next baseline.
+- **Follow-ups / dead ends:** Closed (by KEPT): all four contributing attempts, since they now live in the codebase. Closed (by exclusion): presize-replay-payload-vec — the buffer it targeted no longer exists; do not retry as an independent attempt. Open: targeted `#[inline(always)]` on a single specific callee if profiling later shows a function still on the critical path — the blanket `#[inline]` here is conservative and may leave some calls non-inlined. Open: replacing bincode with a hand-rolled fixed-prefix codec for primitive K/V — the manual tag is now in place, so the next step (skipping bincode entirely for `K: Pod + V: Pod`) is a smaller delta than before; still MEDIUM-risk because it changes the format further. Open: hashing the K once during replay to skip the IndexMap rehash — needs a cached-hash IndexMap variant, doesn't generalize.
 
 ### 2026-05-14 — mark-compact-as-cold
 
