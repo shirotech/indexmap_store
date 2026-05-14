@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | single-open-for-replay-and-append | src/lib.rs | LOW | INCONCLUSIVE | Saved 1–2 open syscalls per open_with; reopen_10k drift -0.7% to +0.5%, all within noise; reverted |
 | 2026-05-14 | bincode-varint-encoding | src/lib.rs | MEDIUM | REVERTED | +65% regression on reopen_10k — varint decode overhead dwarfs disk-size savings (data is page-cached) |
 | 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | skip-path-exists-probe | src/lib.rs | LOW | INCONCLUSIVE | Saved one stat syscall per open; reopen_10k drift -0.2% to -0.8%, all within noise; reverted |
@@ -22,6 +23,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — single-open-for-replay-and-append
+
+- **Hypothesis:** Opening the log once with `OpenOptions{read, append, create}` and reusing the same handle for the replay slurp, the torn-tail `set_len`, and the runtime BufWriter appends — instead of doing three separate opens (`File::open` for read, `OpenOptions::write` for truncate, `OpenOptions::create+append` for runtime) — saves one to two `openat` syscalls per `open_with`. `O_APPEND` only affects writes, so an initial `read_to_end` at offset 0 still works.
+- **Risk:** LOW (semantically equivalent — `path.exists()` check folds into `total_on_disk > 0` after the always-create open).
+- **Files touched:** `src/lib.rs` (`open_with`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.36 ms
+  - insert_2k_strings: 5.47 ms
+  - lookup_100k: 631.46 us
+  - modify_10k: 5.13 ms
+  - reopen_10k: 188.38 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.09% / +0.14% / +0.08%   (within noise)
+  - insert_2k_strings: -0.04% / -0.04% / -0.37%   (within noise)
+  - lookup_100k:      +0.03% / +0.04% / +0.09%   (within noise)
+  - modify_10k:       +0.12% / +1.10% / +1.37%   (within noise — drifting positive but under the +2% guard)
+  - reopen_10k:       -0.68% / -0.26% / +0.47%   (within noise — no consistent improvement)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** The 1–2 open syscalls saved per call are individually ~5–10us on Linux, but `reopen_10k` includes a fresh `tempdir` per iteration and the kernel inode cache absorbs repeat opens cheaply. Net change buried in jitter. The change was also subtly worse for `modify_10k` runs 2 and 3 — opening the same handle with both read and append modes can change kernel pre-allocation or write-back heuristics, which may explain the small positive drift on the write-heavy scenario.
+- **Follow-ups / dead ends:** Closed: combining read/truncate/append opens into one handle. The remaining `open_with` syscall cost is below the bench gate's resolution — further work on the open path is unlikely to clear -3%. Open: replacing bincode entirely for primitive K/V (hand-rolled fixed-prefix codec) — bincode now dominates reopen, but this is MEDIUM risk and changes the on-disk format.
 
 ### 2026-05-14 — bincode-varint-encoding
 
