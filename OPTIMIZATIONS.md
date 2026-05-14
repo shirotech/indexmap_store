@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | mark-compact-as-cold | src/lib.rs | LOW | REVERTED | `#[cold]` on `compact()` regressed reopen_10k +3.6% to +4.0% across all 3 runs — binary-layout side effect hurt icache locality on the read path |
 | 2026-05-14 | inline-enum-tag-u8 | src/lib.rs | MEDIUM | INCONCLUSIVE | Replaced bincode 4-byte enum tag with manual 1-byte tag + bincode tuple; saved 3 bytes/record but all scenarios within ±2% noise; modify_10k -1.1% to -1.4% under -3% gate; reverted |
 | 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold |
 | 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold |
@@ -27,6 +28,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — mark-compact-as-cold
+
+- **Hypothesis:** Adding `#[cold]` to `compact()` would tell LLVM the function is rarely called, allowing it to place compact's body far from the hot mutation/open paths in the text segment, improve icache locality on the hot path, and tilt branch prediction so `maybe_compact`'s ratio check is treated as predicted-not-taken.
+- **Risk:** LOW (annotation only — no behavior change).
+- **Files touched:** `src/lib.rs` (`compact`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.46 ms
+  - lookup_100k: 630.13 us
+  - modify_10k: 5.16 ms
+  - reopen_10k: 121.04 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.05% / -0.01% / +0.07%   (within noise)
+  - insert_2k_strings: +0.52% / +0.29% / +0.23%   (within noise)
+  - lookup_100k:      +0.08% / +0.22% / +0.16%   (within noise)
+  - modify_10k:       -0.26% / +0.08% / +0.39%   (within noise)
+  - reopen_10k:       +3.96% / +3.96% / +3.60%   (REVERTED — all three over +2% guard)
+- **Verdict:** REVERTED.
+- **Why:** A consistent +3.6%–4.0% regression on `reopen_10k` across all three runs (~5us slower on a 121us baseline). Mechanism is almost certainly binary-layout: with `codegen-units = 1` + ThinLTO + `#[cold]`, the linker moves the compact body to the end of the text segment, which shifts the relative offsets of every function that came after it in the original layout. Some of those functions are on the hot open/replay path (e.g., bincode::deserialize monomorphizations, IndexMap::insert helpers), and the new layout incurs more icache misses for them. Reopen_10k has the smallest p50 of all scenarios (121us), so a ~5us layout cost shows up as a percentage-wise large regression. Insert/modify paths absorb the same shift but their per-iter cost is two orders of magnitude larger, so the layout shift is invisible there.
+- **Follow-ups / dead ends:** Closed: blanket `#[cold]` on `compact()`. Closed (by extension): adding `#[cold]` to other rarely-called paths in this crate — the ThinLTO ordering is already near-optimal for the hot loop, and manual hints destabilise it. Open: explicit function ordering via `#[link_section]` / `-Wl,--symbol-ordering-file` to pin hot functions together — needs build-system support, separate hypothesis. Open: profile-guided optimization (PGO) with bench workloads — would let LLVM order functions empirically rather than guess from `#[cold]` hints.
 
 ### 2026-05-14 — inline-enum-tag-u8
 
