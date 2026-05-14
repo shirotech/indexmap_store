@@ -61,7 +61,7 @@ impl Default for StoreConfig {
             compact_ratio: 2.0,
             min_compact_bytes: 1 << 20,
             sync_on_write: false,
-            buf_capacity: 64 * 1024,
+            buf_capacity: 256 * 1024,
         }
     }
 }

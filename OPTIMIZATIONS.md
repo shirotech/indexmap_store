@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold |
 | 2026-05-14 | inline-hot-path-functions | src/lib.rs | LOW | INCONCLUSIVE | Added #[inline] to thin accessors, mutation entry points, flush_scratch, maybe_compact, serialize_err; all scenarios within ±1% noise across 3 runs; reverted |
 | 2026-05-14 | single-open-for-replay-and-append | src/lib.rs | LOW | INCONCLUSIVE | Saved 1–2 open syscalls per open_with; reopen_10k drift -0.7% to +0.5%, all within noise; reverted |
 | 2026-05-14 | bincode-varint-encoding | src/lib.rs | MEDIUM | REVERTED | +65% regression on reopen_10k — varint decode overhead dwarfs disk-size savings (data is page-cached) |
@@ -24,6 +25,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — larger-default-bufwriter-capacity
+
+- **Hypothesis:** Raising `StoreConfig::default().buf_capacity` from 64KB to 256KB pushes the BufWriter backing buffer above glibc's default `M_MMAP_THRESHOLD` (128KB), so allocation goes through `mmap` (page-aligned, lazily zeroed) instead of the heap — every `open_with` allocates a buffer, and on the cold-reopen path that allocation is the only writable region we set up.
+- **Risk:** LOW (no API or semantic change; `buf_capacity` is already configurable).
+- **Files touched:** `src/lib.rs` (`StoreConfig::default`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.36 ms
+  - insert_2k_strings: 5.47 ms
+  - lookup_100k: 631.23 us
+  - modify_10k: 5.12 ms
+  - reopen_10k: 188.38 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.22% / -0.66% / -0.42%   (within noise)
+  - insert_2k_strings: +0.08% / +0.04% / -0.06%   (within noise)
+  - lookup_100k:      -0.01% / +0.14% / +0.16%   (within noise)
+  - modify_10k:       -0.42% / +1.30% / +0.92%   (within noise — under +2% guard)
+  - reopen_10k:       -9.00% / -8.44% / -8.62%   (KEPT — all three well below -3%)
+- **Verdict:** KEPT.
+- **Why:** Consistent ~8.5% improvement on `reopen_10k` reproduced to within 0.6% across three independent runs against the fixed pre-change baseline. Mechanism: glibc malloc routes allocations under ~128KB through the heap (which can fragment and requires touching freelist metadata), while allocations at or above the mmap threshold go directly through `mmap`, returning fresh, lazily-zeroed pages. BufWriter only allocates — it doesn't write into the buffer on the read-and-replay path — so the larger allocation is cheaper in the wallclock-relevant work. Mutation paths are flat because they do write into the buffer (touching ~240KB either way), and the kernel page fault cost roughly matches the prior heap-touch cost. The new `bench_results.json` from run 3 becomes the next baseline.
+- **Follow-ups / dead ends:** Closed: bumping the default `buf_capacity` to 256KB. Open: tuning further — 512KB or 1MB may give another small step on reopen but risks committing more memory for stores that never write much. Open: investigating whether the `Vec::with_capacity(total_on_disk)` slurp allocation also benefits from mmap-threshold sizing (for our 240KB log it already does). Open: replacing BufWriter entirely with a hand-rolled fixed-stride writer that avoids the dynamic capacity field — different shape, separate hypothesis.
 
 ### 2026-05-14 — inline-hot-path-functions
 
