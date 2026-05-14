@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | inline-always-insert-remove-modify | src/lib.rs | LOW | REVERTED | Promoted `#[inline]` → `#[inline(always)]` on the three public mutation entry points — reopen_10k regressed +9.33% / +9.39% / +9.23% across all 3 runs (~11us on a 119us baseline) despite reopen calling none of those functions; the larger inlined bodies in the bench harness's u64-monomorphisation shifted symbol layout enough to push something off the read path's icache; clear example of how `#[inline(always)]` on hot public APIs can hurt unrelated cold-ish paths through codegen-layout side effects |
 | 2026-05-14 | truncate-scratch-preserve-len-prefix | src/lib.rs | LOW | INCONCLUSIVE | Replaced `clear + extend(&[0;4]) + push(tag)` with `truncate(LEN_BYTES) + push(tag)` after pre-seeding scratch with 4 zero bytes at construction — reopen_10k drifts consistently -1.62% / -1.14% / -0.86% (only run 1 clears -1.5%; gate requires all 3) and insert_2k_strings -0.49% / -0.19% / -0.31% (directional, well under gate); reverted |
 | 2026-05-14 | combine-len-prefix-and-tag-extend | src/lib.rs | LOW | INCONCLUSIVE | Fused `extend_from_slice(&[0;4])` + `push(tag)` into one `extend_from_slice(&[0,0,0,0,tag])` across insert/remove/modify — all scenarios within ±1.2% noise; modify_10k -0.71%/+0.01%/+0.16%, reopen_10k -0.59%/-1.20%/-0.24% (directional but neither clears -1.5% gate); reverted |
 | 2026-05-14 | inline-always-flush-scratch | src/lib.rs | LOW | INCONCLUSIVE | Promoted `#[inline]` → `#[inline(always)]` on `flush_scratch` (targeted follow-up from inline-hot-path-functions) — all scenarios within ±1% noise; reopen_10k drifts -0.21% / -0.65% / -0.70% (directional but under -1.5% gate); ThinLTO already inlined flush_scratch as expected, the `always` only forces what was already happening |
@@ -35,6 +36,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — inline-always-insert-remove-modify
+
+- **Hypothesis:** Open follow-up from `inline-always-flush-scratch`. Promoting the three public mutation entry points `insert` / `remove` / `modify` from `#[inline]` to `#[inline(always)]` would let LLVM see the bench harness's 10k-iteration mutation loop as a single fused function (rather than 10k separate calls to monomorphised entry points), opening loop-invariant code motion and tighter register allocation across iterations.
+- **Risk:** LOW (no API/format/dep change; just annotation strength).
+- **Files touched:** `src/lib.rs` (`insert`, `remove`, `modify`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.33% / -1.16% / -0.45%   (within noise — directional improvement on the targeted scenario, but well under the -1.5% gate)
+  - insert_2k_strings: -0.45% / -0.53% / +0.01%   (within noise — small consistent directional improvement on the string variant)
+  - lookup_100k:      -0.04% / +0.05% / +0.16%   (within noise — lookup doesn't touch these entry points)
+  - modify_10k:       +0.12% / +0.19% / +0.20%   (within noise — modify drifts slightly positive, the OPPOSITE of intent)
+  - reopen_10k:       +9.33% / +9.39% / +9.23%   (REVERTED — all three far over +1.5% guard, ~11us regression on a 119us baseline; reopen calls none of these functions)
+- **Verdict:** REVERTED.
+- **Why:** Strong codegen-layout backfire. The bench harness in `benches/store_bench.rs` is a separate crate that consumes `IndexMapStore` and monomorphises `insert`/`remove`/`modify` for `u64,u64` and `String,String`. With `#[inline(always)]` the entire bodies of those functions (including the `bincode::serialize_into`, the `flush_scratch`, the `maybe_compact` check, the live-records-counter update) get pasted into the bench harness's loop bodies, swelling those callsites by hundreds of bytes each. ThinLTO then has to fit the swollen harness *and* the unchanged read-path (replay, open_with) into the same text segment ordering, and it picks a layout where something that was hot during reopen (most likely an `IndexMap::insert` helper or a bincode tuple-deserialise) is now further from the loop in icache, costing ~11us per reopen. The reopen scenarios timed work is `open + len + drop` — none of the three mutation functions are called — so this is purely a layout side effect of bloating other code. The targeted scenarios (`insert_10k_u64`, `insert_2k_strings`) showed small directional improvements (-0.3% to -1.2%) consistent with the loop fusion idea actually working a little, but the reopen regression dwarfs the win. Important lesson: `#[inline(always)]` on hot public APIs can cause material regressions on unrelated cold paths through icache pressure alone.
+- **Follow-ups / dead ends:** Closed: blanket `#[inline(always)]` on the public mutation entry points. Closed (by extension): any attempt to force-inline the full mutation bodies into the bench harness — they're too big to inline without poisoning icache for the rest of the binary. Open: `#[inline(always)]` on just the *innermost* mutation helper (e.g., the bincode call, or the IndexMap insert) — would inline less code per callsite and avoid the swelling effect; needs a refactor to extract that helper. Open: profile-guided optimization (PGO) — would let LLVM decide which calls to inline based on measured hotness rather than annotations, almost certainly the right answer for this codebase but needs build-system support outside the single-file-edit model. Open: explicit `#[link_section]` ordering or `-Wl,--symbol-ordering-file` to pin the reopen-hot functions together regardless of unrelated source edits.
 
 ### 2026-05-14 — truncate-scratch-preserve-len-prefix
 
