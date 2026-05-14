@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | combine-len-prefix-and-tag-extend | src/lib.rs | LOW | INCONCLUSIVE | Fused `extend_from_slice(&[0;4])` + `push(tag)` into one `extend_from_slice(&[0,0,0,0,tag])` across insert/remove/modify — all scenarios within ±1.2% noise; modify_10k -0.71%/+0.01%/+0.16%, reopen_10k -0.59%/-1.20%/-0.24% (directional but neither clears -1.5% gate); reverted |
 | 2026-05-14 | inline-always-flush-scratch | src/lib.rs | LOW | INCONCLUSIVE | Promoted `#[inline]` → `#[inline(always)]` on `flush_scratch` (targeted follow-up from inline-hot-path-functions) — all scenarios within ±1% noise; reopen_10k drifts -0.21% / -0.65% / -0.70% (directional but under -1.5% gate); ThinLTO already inlined flush_scratch as expected, the `always` only forces what was already happening |
 | 2026-05-14 | lazy-bufwriter-allocation | src/lib.rs | LOW | REVERTED | Deferred the 1MB BufWriter mmap until first mutation via `log: Option<BufWriter>` + `file: Option<File>` — reopen_10k regressed +0.95% / +1.56% / +2.89% (run 1 over +1.5% guard); the extra struct field + per-write `is_none()` branch + Drop-time discrimination outweighed the saved mmap, and the struct grew enough that codegen layout shifted unfavorably on the read path |
 | 2026-05-14 | bufwriter-capacity-2mb | src/lib.rs | LOW | INCONCLUSIVE | Bumped default `buf_capacity` from 1MB to 2MB — all scenarios within ±1% noise (reopen_10k -0.68% / +0.61% / -0.61%); 1MB already past the mmap-threshold ceiling, diminishing returns confirmed; reverted |
@@ -33,6 +34,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — combine-len-prefix-and-tag-extend
+
+- **Hypothesis:** The current per-mutation prelude `scratch.clear(); scratch.extend_from_slice(&[0u8; LEN_BYTES]); scratch.push(tag);` calls `Vec` machinery three times — clear (length reset), extend (capacity check + 4-byte memcpy + length update), push (capacity check + 1-byte store + length update). Fusing extend and push into a single `extend_from_slice(&[0, 0, 0, 0, tag])` collapses two capacity checks and two length updates into one each — saving ~2–3 cycles per mutation across `insert`/`remove`/`modify`. Over 10k mutations this is ~20–30us, in the ballpark of clearing the -1.5% gate on `modify_10k` (5.09ms baseline, gate would need ~76us improvement).
+- **Risk:** LOW (no behavior, format, API, or dep change — same bytes written in the same order, just emitted from one slice literal instead of two ops).
+- **Files touched:** `src/lib.rs` (`insert`, `remove`, `modify` write-prelude).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.34% / +0.58% / +0.02%   (within noise)
+  - insert_2k_strings: -0.22% / -0.13% / -0.25%   (within noise — small consistent directional improvement, well under the gate)
+  - modify_10k:       -0.71% / +0.01% / +0.16%   (within noise — run 1 was directionally positive, runs 2–3 flat; no consistent improvement)
+  - lookup_100k:      -0.14% / +0.23% / +0.18%   (within noise)
+  - reopen_10k:       -0.59% / -1.20% / -0.24%   (within noise — directionally positive but reopen doesn't call the modified paths, so this is codegen-layout drift from the diff, not a real reopen win)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** The cycle savings are real but smaller than the bench's noise floor. ThinLTO + codegen_units=1 already inlines `Vec::push` and `Vec::extend_from_slice` for known-small slices, and LLVM is good at coalescing adjacent length stores when the writes are in the same basic block. The 2–3 cycles per call we hoped to save are likely already collapsed by the optimizer, so the diff buys only the symbol layout shuffle that codegen produces from any source-level edit. `insert_2k_strings`'s small consistent -0.13% to -0.25% directional drift is the closest thing to signal — but it's under the gate. `modify_10k` was the target scenario (~5.09ms baseline gives the largest absolute budget for a small per-call improvement to clear the -1.5% gate) but it sat flat with one run only at -0.71%, well short of the gate.
+- **Follow-ups / dead ends:** Closed: fusing the LEN-prefix and tag extends into one literal. Closed (by extension): any further micro-optimization of the `clear; extend; push` prelude — ThinLTO has already collapsed it to optimum. Open: replacing `clear()` with `truncate(LEN_BYTES)` so the LEN-prefix bytes survive between calls and don't need to be re-zeroed (correctness is fine because `flush_scratch` overwrites them anyway) — different shape, would need to drop the `extend_from_slice` entirely and just `push(tag)` after `truncate(LEN_BYTES)`; saves an additional ~5-byte store and one length-store per mutation, separate hypothesis. Open: the deeper write-path bottleneck is the bincode `serialize_into` call (which monomorphizes through serde dispatch); replacing it with a hand-rolled fixed-prefix codec specialised for primitive K/V is MEDIUM-risk because it changes the on-disk format.
 
 ### 2026-05-14 — inline-always-flush-scratch
 
