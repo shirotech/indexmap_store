@@ -14,9 +14,31 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — presize-indexmap-from-file-size
+
+- **Hypothesis:** Calling `IndexMap::reserve(file_size / 24)` before the replay loop in `open_with` lets the map skip the ~14 grow-rehash steps it would otherwise do while filling from zero to thousands of entries, cutting cold-reopen latency.
+- **Risk:** LOW.
+- **Files touched:** `src/lib.rs` (`open_with`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.36 ms
+  - insert_2k_strings: 5.46 ms
+  - lookup_100k: 631.70 us
+  - modify_10k: 5.13 ms
+  - reopen_10k: 357.58 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.62% / +0.50% / +0.13%   (within noise)
+  - insert_2k_strings: +0.13% / +0.20% / -0.04%   (within noise)
+  - lookup_100k:      -0.43% / -0.01% / -0.25%   (within noise)
+  - modify_10k:       -0.08% / +0.96% / +0.86%   (within noise)
+  - reopen_10k:       -41.20% / -41.28% / -41.18%   (KEPT — all three far below -3%)
+- **Verdict:** KEPT.
+- **Why:** Massive, dead-flat improvement on `reopen_10k` (~150us shaved off ~360us p50) reproduced to within 0.1% across three independent runs, with all other scenarios within the ±1% noise band — pre-sizing avoids the geometric rehash sequence on the replay path. The 24 bytes/record divisor matches a `Insert<u64,u64>` record; larger records over-reserve harmlessly because IndexMap only allocates one hash-table backing array and never shrinks during replay.
+- **Follow-ups / dead ends:** Closed: file-size-based replay capacity hint. Open: tuning the divisor for string-heavy workloads (currently over-reserves for `insert_2k_strings`-shaped data — wastes some memory, doesn't help further). Open: pre-sizing the replay `payload` Vec from the largest length seen so far (separate hypothesis, smaller potential payoff now that reopen_10k is already much faster). Open: faster hasher (foldhash/ahash) — would touch mutation paths too, MEDIUM risk because it adds a dep.
 
 ### 2026-05-14 — batch-len-prefix-and-payload
 

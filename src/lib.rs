@@ -104,6 +104,14 @@ where
         if path.exists() {
             let file = File::open(&path)?;
             let total_on_disk = file.metadata()?.len();
+            // Hint the IndexMap capacity from the on-disk size so the replay
+            // loop avoids the geometric grow-rehash sequence. 24 bytes/record
+            // matches the smallest Insert<u64,u64> record (4-byte length +
+            // 20-byte payload); larger records over-reserve harmlessly.
+            let capacity_hint = (total_on_disk / 24) as usize;
+            if capacity_hint > 0 {
+                map.reserve(capacity_hint);
+            }
             let mut reader = BufReader::new(file);
             let mut len_buf = [0u8; LEN_BYTES];
             let mut payload: Vec<u8> = Vec::new();
