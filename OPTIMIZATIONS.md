@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | compact-batch-len-prefix-and-payload | src/lib.rs | LOW | INCONCLUSIVE | Applied the KEPT `batch-len-prefix-and-payload` pattern (one `write_all` per record by filling length prefix in scratch) to `compact()`'s rewrite loop — all scenarios within ±0.75% noise (reopen_10k -0.74% / -0.22% / -0.52%, insert_2k_strings +0.68% / +0.41% / +0.15%); bench doesn't exercise compact so this was expected to be flat; reverted |
 | 2026-05-14 | uninline-mutation-entry-points | src/lib.rs | LOW | REVERTED | Removed the `#[inline]` annotation from `insert`/`remove`/`modify` to test whether ThinLTO's heuristic would *not* inline them and leave the bodies in lib.rs's text segment (motivated by `inline-always-insert-remove-modify`'s +9% reopen regression from over-inlining) — reopen_10k still regressed +6.14% / +6.05% / +5.65% across all 3 runs; both directions of the inline knob hurt reopen, confirming the existing `#[inline]` (heuristic-friendly) is locally optimal; write paths flat |
 | 2026-05-14 | inline-always-insert-remove-modify | src/lib.rs | LOW | REVERTED | Promoted `#[inline]` → `#[inline(always)]` on the three public mutation entry points — reopen_10k regressed +9.33% / +9.39% / +9.23% across all 3 runs (~11us on a 119us baseline) despite reopen calling none of those functions; the larger inlined bodies in the bench harness's u64-monomorphisation shifted symbol layout enough to push something off the read path's icache; clear example of how `#[inline(always)]` on hot public APIs can hurt unrelated cold-ish paths through codegen-layout side effects |
 | 2026-05-14 | truncate-scratch-preserve-len-prefix | src/lib.rs | LOW | INCONCLUSIVE | Replaced `clear + extend(&[0;4]) + push(tag)` with `truncate(LEN_BYTES) + push(tag)` after pre-seeding scratch with 4 zero bytes at construction — reopen_10k drifts consistently -1.62% / -1.14% / -0.86% (only run 1 clears -1.5%; gate requires all 3) and insert_2k_strings -0.49% / -0.19% / -0.31% (directional, well under gate); reverted |
@@ -37,6 +38,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — compact-batch-len-prefix-and-payload
+
+- **Hypothesis:** Open follow-up from the KEPT `batch-len-prefix-and-payload` ("`compact()` still does two separate `write_all`s per record — could be unified the same way"). Reserve `LEN_BYTES` at the start of the compact loop's `buf`, fill the length in place, and emit length-prefix + payload via a single `write_all` per record. Bench doesn't exercise `compact()` (log stays under the 1MB compact threshold for all five scenarios), so primary outcome is consistency-with-flush_scratch-pattern; secondary outcome is codegen-layout drift that might nudge reopen positively.
+- **Risk:** LOW (no API/format/dep change; on-disk layout identical — same bytes in the same order).
+- **Files touched:** `src/lib.rs` (`compact()`'s rewrite loop).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.26 ms
+  - insert_2k_strings: 5.49 ms
+  - lookup_100k: 630.26 us
+  - modify_10k: 5.09 ms
+  - reopen_10k: 119.15 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   +0.10% / -0.38% / -0.33%   (within noise)
+  - insert_2k_strings: +0.68% / +0.41% / +0.15%   (within noise — small directional positive drift, well under +1.5% guard)
+  - lookup_100k:      -0.18% / -0.05% / +0.14%   (within noise)
+  - modify_10k:       +0.02% / +0.33% / -0.15%   (within noise)
+  - reopen_10k:       -0.74% / -0.22% / -0.52%   (within noise — directional improvement, doesn't clear -1.5% gate)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** As expected, the bench scenarios don't exercise compaction (logs under 1MB stay below `min_compact_bytes`), so the only way this change moves the numbers is through codegen-layout drift from the source-level edit. The small reopen_10k improvement (-0.22% to -0.74%) is real-but-tiny — directionally consistent with previous "any edit shifts symbol layout and reopen drifts negative" pattern but doesn't approach the gate. `insert_2k_strings` drifted slightly positive (+0.15% to +0.68%) for similar layout reasons. The deeper observation: this codebase's bench numbers are dominated by codegen layout, not by source-level micro-optimizations on cold paths. A consistency/cleanup change that doesn't ship without a real bench win.
+- **Follow-ups / dead ends:** Closed: applying the batch-len-prefix-and-payload pattern to compact (the optimization is correct in principle but the bench doesn't exercise it; not worth the codegen-layout risk to ship). Open: a workload that *does* exercise compaction (lower `min_compact_bytes` in a bench scenario, or write 1.5MB+ of records) would be needed to validate this; that's a bench harness change, not a source change. Open: when the bench harness is later expanded to cover compact, re-evaluate this hypothesis under a fresh slug like `compact-batch-write-when-exercised`.
 
 ### 2026-05-14 — uninline-mutation-entry-points
 
