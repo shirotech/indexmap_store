@@ -14,6 +14,7 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | bincode-varint-encoding | src/lib.rs | MEDIUM | REVERTED | +65% regression on reopen_10k — varint decode overhead dwarfs disk-size savings (data is page-cached) |
 | 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | skip-path-exists-probe | src/lib.rs | LOW | INCONCLUSIVE | Saved one stat syscall per open; reopen_10k drift -0.2% to -0.8%, all within noise; reverted |
 | 2026-05-14 | presize-replay-payload-vec | src/lib.rs | LOW | INCONCLUSIVE | All scenarios within ±1.5% noise; reverted |
@@ -21,6 +22,27 @@ already attempted (regardless of verdict).
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — bincode-varint-encoding
+
+- **Hypothesis:** Switching the bincode codec from the back-compat `bincode::serialize`/`deserialize` helpers (fixint, native-endian) to `bincode::DefaultOptions::new()` (varint, little-endian) shrinks records on disk — small u64 keys/values collapse from 8 bytes to 1 — so both the writer and the slurped replay buffer process fewer bytes.
+- **Risk:** MEDIUM (changes on-disk log format — older logs are unreadable; flagged in code comment).
+- **Files touched:** `src/lib.rs` (added `codec()` helper, replaced all 5 bincode call sites in `insert`, `remove`, `modify`, `compact`, and the `open_with` replay).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.36 ms
+  - insert_2k_strings: 5.47 ms
+  - lookup_100k: 631.23 us
+  - modify_10k: 5.12 ms
+  - reopen_10k: 188.38 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.15% / -0.06% / -0.15%   (within noise)
+  - insert_2k_strings: -0.14% / -0.04% / -0.13%   (within noise)
+  - lookup_100k:      -0.23% / -0.20% / -0.21%   (within noise — `lookup_100k` doesn't touch the codec, expected flat)
+  - modify_10k:       -0.32% / -0.11% / -0.36%   (within noise)
+  - reopen_10k:       +65.55% / +65.33% / +65.65%   (REVERTED — catastrophic, ~+65% on every run)
+- **Verdict:** REVERTED.
+- **Why:** Varint decoding is bit-shift-and-branch per integer; against fixint's straight `read_unaligned` load, the per-byte processing cost is much higher. The on-disk savings don't help in benches because the log is in the OS page cache — slurping is already memory-bound, not disk-bound, and we now spend ~123us more parsing the bytes. Writers were flat because mutation cost is dominated by IndexMap insert + BufWriter copy, not by bincode size.
+- **Follow-ups / dead ends:** Closed: varint encoding via `bincode::DefaultOptions`. Closed (by extension): general "shrink records on disk" line for in-memory workloads — wins on disk don't translate when reads are cached. Open: hand-rolled fixed-prefix codec specialised for `LogOwned<K, V>` where K/V are sized primitives — could skip the enum dispatch entirely. Still MEDIUM risk because it changes the format.
 
 ### 2026-05-14 — slurp-log-into-vec
 
