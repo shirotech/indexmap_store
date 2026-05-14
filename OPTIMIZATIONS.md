@@ -14,11 +14,33 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | skip-path-exists-probe | src/lib.rs | LOW | INCONCLUSIVE | Saved one stat syscall per open; reopen_10k drift -0.2% to -0.8%, all within noise; reverted |
 | 2026-05-14 | presize-replay-payload-vec | src/lib.rs | LOW | INCONCLUSIVE | All scenarios within ±1.5% noise; reverted |
 | 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — skip-path-exists-probe
+
+- **Hypothesis:** Replacing the `path.exists()` + `File::open()` pair with a single `File::open()` (treating `NotFound` as "no existing log") saves one stat syscall per `open`, most visible on `reopen_10k` where the open call is the entire timed work.
+- **Risk:** LOW.
+- **Files touched:** `src/lib.rs` (`open_with`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.36 ms
+  - insert_2k_strings: 5.46 ms
+  - lookup_100k: 630.21 us
+  - modify_10k: 5.19 ms
+  - reopen_10k: 210.11 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.36% / +0.09% / -0.26%   (within noise)
+  - insert_2k_strings: +0.31% / +0.29% / +0.68%   (within noise)
+  - lookup_100k:      +0.14% / -0.06% / -0.05%   (within noise)
+  - modify_10k:       -0.93% / -1.06% / -1.26%   (within noise — directionally positive but not -3%)
+  - reopen_10k:       -0.69% / -0.19% / -0.79%   (within noise — directionally positive but not -3%)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** A single stat syscall is ~0.5–2us on Linux; against `reopen_10k`'s 210us p50 that's at most ~1%, well below the -3% gate. The change is technically a small improvement (and removes a benign TOCTOU window between the probe and the open), but the bench gate's noise threshold is the right bar — accept the dead-end so we don't reopen this hypothesis later.
+- **Follow-ups / dead ends:** Closed: collapsing `path.exists()` + `File::open()`. Open: combining the post-replay `OpenOptions::new().create(true).append(true).open(&path)` with the existing read handle to save a second open syscall — different shape, separate hypothesis.
 
 ### 2026-05-14 — presize-replay-payload-vec
 
