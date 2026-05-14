@@ -14,10 +14,32 @@ already attempted (regardless of verdict).
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes |
 |---|---|---|---|---|---|
+| 2026-05-14 | presize-replay-payload-vec | src/lib.rs | LOW | INCONCLUSIVE | All scenarios within ±1.5% noise; reverted |
 | 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
+
+### 2026-05-14 — presize-replay-payload-vec
+
+- **Hypothesis:** Initialising the replay `payload` buffer with `Vec::with_capacity(256)` instead of `Vec::new()` saves a couple of early `realloc` calls as the first records grow the buffer.
+- **Risk:** LOW.
+- **Files touched:** `src/lib.rs` (`open_with`).
+- **Baseline (pre-change) p50:**
+  - insert_10k_u64: 5.37 ms
+  - insert_2k_strings: 5.45 ms
+  - lookup_100k: 630.14 us
+  - modify_10k: 5.18 ms
+  - reopen_10k: 210.31 us
+- **Δ p50 across 3 confirming runs:**
+  - insert_10k_u64:   -0.01% / -0.14% / -0.07%   (within noise)
+  - insert_2k_strings: +0.25% / +0.00% / +0.20%   (within noise)
+  - lookup_100k:      +0.20% / +0.03% / +0.01%   (within noise)
+  - modify_10k:       -1.42% / -0.90% / +0.29%   (within noise)
+  - reopen_10k:       -0.37% / -0.50% / -0.10%   (within noise — no improvement)
+- **Verdict:** INCONCLUSIVE — reverted.
+- **Why:** After cycle 2 the IndexMap pre-sizing already dominates the reopen path; the first record's `resize` allocates a Vec backing store, and subsequent same-size records reuse that capacity for free. Saving two or three reallocations at the top of replay buys nothing measurable next to the per-record bincode deserialize cost.
+- **Follow-ups / dead ends:** Closed: pre-sizing the replay payload Vec (no measurable win). Open: slurping the entire log into a Vec<u8> with `read_to_end` so the replay parses from memory rather than via `BufReader::read_exact` — different shape of optimization, separate hypothesis.
 
 ### 2026-05-14 — presize-indexmap-from-file-size
 
