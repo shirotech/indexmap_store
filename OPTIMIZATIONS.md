@@ -6,7 +6,8 @@ already attempted (regardless of verdict).
 
 **Verdict legend**
 
-- `KEPT` — change is in the codebase; bench gate passed.
+- `KEPT (deep-win)` — change is in the codebase; ≥1 scenario reliably improves ≤ -1.5% across all 3 runs with no scenario regressing ≥ +1.5% in any run.
+- `KEPT (broad-win)` — change is in the codebase; ALL scenarios improve ≤ -0.5% across all 3 runs with no scenario drifting > +0.1% in any run. Captures "many small wins everywhere" diffs.
 - `REVERTED` — change broke tests/clippy, or bench gate failed; code restored.
 - `INCONCLUSIVE` — change neither improved nor regressed beyond noise; reverted, treat as a closed dead-end so we don't retry it.
 
@@ -24,19 +25,19 @@ already attempted (regardless of verdict).
 | 2026-05-14 | lazy-bufwriter-allocation | src/lib.rs | LOW | REVERTED | Deferred the 1MB BufWriter mmap until first mutation via `log: Option<BufWriter>` + `file: Option<File>` — reopen_10k regressed +0.95% / +1.56% / +2.89% (run 1 over +1.5% guard); the extra struct field + per-write `is_none()` branch + Drop-time discrimination outweighed the saved mmap, and the struct grew enough that codegen layout shifted unfavorably on the read path |
 | 2026-05-14 | bufwriter-capacity-2mb | src/lib.rs | LOW | INCONCLUSIVE | Bumped default `buf_capacity` from 1MB to 2MB — all scenarios within ±1% noise (reopen_10k -0.68% / +0.61% / -0.61%); 1MB already past the mmap-threshold ceiling, diminishing returns confirmed; reverted |
 | 2026-05-14 | mmap-slurp-buffer-min-1mb | src/lib.rs | LOW | REVERTED | `Vec::with_capacity(total_on_disk).max(1MB)` regressed reopen_10k +4.86% to +5.04% across all 3 runs — the larger mmap region the kernel has to track (1MB) costs more on every reopen than the 240KB slurp it replaced, while only the first 240KB ever gets touched |
-| 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed |
+| 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT (deep-win) | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed |
 | 2026-05-14 | mark-compact-as-cold | src/lib.rs | LOW | REVERTED | `#[cold]` on `compact()` regressed reopen_10k +3.6% to +4.0% across all 3 runs — binary-layout side effect hurt icache locality on the read path |
 | 2026-05-14 | inline-enum-tag-u8 | src/lib.rs | MEDIUM | INCONCLUSIVE | Replaced bincode 4-byte enum tag with manual 1-byte tag + bincode tuple; saved 3 bytes/record but all scenarios within ±2% noise; modify_10k -1.1% to -1.4% under -3% gate; reverted |
-| 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold |
-| 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold |
+| 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT (deep-win) | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold |
+| 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT (deep-win) | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold |
 | 2026-05-14 | inline-hot-path-functions | src/lib.rs | LOW | INCONCLUSIVE | Added #[inline] to thin accessors, mutation entry points, flush_scratch, maybe_compact, serialize_err; all scenarios within ±1% noise across 3 runs; reverted |
 | 2026-05-14 | single-open-for-replay-and-append | src/lib.rs | LOW | INCONCLUSIVE | Saved 1–2 open syscalls per open_with; reopen_10k drift -0.7% to +0.5%, all within noise; reverted |
 | 2026-05-14 | bincode-varint-encoding | src/lib.rs | MEDIUM | REVERTED | +65% regression on reopen_10k — varint decode overhead dwarfs disk-size savings (data is page-cached) |
-| 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
+| 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT (deep-win) | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 | 2026-05-14 | skip-path-exists-probe | src/lib.rs | LOW | INCONCLUSIVE | Saved one stat syscall per open; reopen_10k drift -0.2% to -0.8%, all within noise; reverted |
 | 2026-05-14 | presize-replay-payload-vec | src/lib.rs | LOW | INCONCLUSIVE | All scenarios within ±1.5% noise; reverted |
-| 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
-| 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
+| 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT (deep-win) | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
+| 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT (deep-win) | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise |
 
 ## Detailed entries
 
@@ -267,7 +268,7 @@ already attempted (regardless of verdict).
   - lookup_100k:      -0.14% / -0.01% / +0.02%   (within noise)
   - modify_10k:       -1.44% / -1.69% / -1.24%   (directional improvement; 2 of 3 runs clear -1.5%, run 3 misses by 0.26pp — not a gate-passing scenario but moves in the right direction)
   - reopen_10k:       -2.02% / -1.80% / -1.56%   (KEPT — all three ≤ -1.5%, gate cleared by 0.06pp on the tightest run)
-- **Verdict:** KEPT.
+- **Verdict:** KEPT (deep-win).
 - **Why:** `reopen_10k` consistently improves -1.56% to -2.02% across all three runs against the fixed pre-change baseline, clearing the -1.5% improvement gate in every run. No scenario regresses past +1.5% in any run (max +0.57% on `insert_2k_strings`, well within the +1.5% guard). The win is modest — roughly 2us shaved off 121us — and barely clears the gate, which is expected because each individual ingredient was previously within ±1.5% noise. The most plausible contributors on the reopen path are: collapsing the three-open sequence to one handle (saves ~one stat + one extra open syscall, ~5–10us in cold-cache territory, though here the inode is hot in cache); the manual 1-byte tag (3 bytes less to slurp + one fewer serde dispatch path per record); and codegen layout shifts from the inline annotations and the dropped enums. `modify_10k` drifted directionally positive across all three runs (-1.24% to -1.69%) — close to gate-clearing — which hints at a real but small write-path benefit from the inlined hot-path attributes and the simpler tag path; doesn't quite clear the bar but is consistent with the inline-enum-tag-u8 entry's earlier observation of "modify_10k -1.1% to -1.4%" individually. The 4-byte → 1-byte tag is the only on-disk format change; tests verified semantic correctness end-to-end (persistence_across_reopen, recovers_from_torn_tail, recovers_from_truncated_payload all pass — the truncated-payload test still hits the `len == 0` and bad-tag early-out paths). The new `bench_results.json` from run 3 becomes the next baseline.
 - **Follow-ups / dead ends:** Closed (by KEPT): all four contributing attempts, since they now live in the codebase. Closed (by exclusion): presize-replay-payload-vec — the buffer it targeted no longer exists; do not retry as an independent attempt. Open: targeted `#[inline(always)]` on a single specific callee if profiling later shows a function still on the critical path — the blanket `#[inline]` here is conservative and may leave some calls non-inlined. Open: replacing bincode with a hand-rolled fixed-prefix codec for primitive K/V — the manual tag is now in place, so the next step (skipping bincode entirely for `K: Pod + V: Pod`) is a smaller delta than before; still MEDIUM-risk because it changes the format further. Open: hashing the K once during replay to skip the IndexMap rehash — needs a cached-hash IndexMap variant, doesn't generalize.
 
@@ -330,7 +331,7 @@ already attempted (regardless of verdict).
   - lookup_100k:      -0.16% / -0.15% / -0.33%   (within noise)
   - modify_10k:       +0.15% / -0.65% / -0.21%   (within noise)
   - reopen_10k:       -29.95% / -29.35% / -29.69%   (KEPT — all three far below -3%)
-- **Verdict:** KEPT.
+- **Verdict:** KEPT (deep-win).
 - **Why:** Huge, dead-flat 30% improvement on `reopen_10k` (172us → 121us) reproduced to within 0.3% across three independent runs. Mechanism: glibc's M_MMAP_THRESHOLD is dynamic — when mmap'd allocations are freed, the threshold can rise toward `M_MMAP_MAX`, which means later allocations of similar size silently shift back to the heap, incurring per-call heap fragmentation work. 1MB allocations sit far enough above any plausible heuristic ceiling that the allocator consistently routes through `mmap` (page-aligned, lazily zeroed pages, no zeroing happens since the buffer is allocated-but-unused on the read-path). Mutation paths stay flat (the buffer gets written into either way; ~10k * 24 bytes = 240KB total fits in one flush at either 256KB or 1MB). The new `bench_results.json` from run 3 becomes the next baseline.
 - **Follow-ups / dead ends:** Closed: bumping the default to 1MB. Open: investigating whether 2MB or 4MB helps further — diminishing returns expected and at some point committing too much memory hurts on multi-store workloads. Open: explicitly calling `mallopt(M_MMAP_THRESHOLD, 131072)` at lib init to force mmap for smaller buffers too — requires `libc` dep and a once-init, separate hypothesis. Open: replacing the BufWriter with a direct `mmap`-backed writer to skip the userspace copy on the buffered path — HIGH risk (introduces mmap, complex semantics).
 
@@ -351,7 +352,7 @@ already attempted (regardless of verdict).
   - lookup_100k:      -0.01% / +0.14% / +0.16%   (within noise)
   - modify_10k:       -0.42% / +1.30% / +0.92%   (within noise — under +2% guard)
   - reopen_10k:       -9.00% / -8.44% / -8.62%   (KEPT — all three well below -3%)
-- **Verdict:** KEPT.
+- **Verdict:** KEPT (deep-win).
 - **Why:** Consistent ~8.5% improvement on `reopen_10k` reproduced to within 0.6% across three independent runs against the fixed pre-change baseline. Mechanism: glibc malloc routes allocations under ~128KB through the heap (which can fragment and requires touching freelist metadata), while allocations at or above the mmap threshold go directly through `mmap`, returning fresh, lazily-zeroed pages. BufWriter only allocates — it doesn't write into the buffer on the read-and-replay path — so the larger allocation is cheaper in the wallclock-relevant work. Mutation paths are flat because they do write into the buffer (touching ~240KB either way), and the kernel page fault cost roughly matches the prior heap-touch cost. The new `bench_results.json` from run 3 becomes the next baseline.
 - **Follow-ups / dead ends:** Closed: bumping the default `buf_capacity` to 256KB. Open: tuning further — 512KB or 1MB may give another small step on reopen but risks committing more memory for stores that never write much. Open: investigating whether the `Vec::with_capacity(total_on_disk)` slurp allocation also benefits from mmap-threshold sizing (for our 240KB log it already does). Open: replacing BufWriter entirely with a hand-rolled fixed-stride writer that avoids the dynamic capacity field — different shape, separate hypothesis.
 
@@ -435,7 +436,7 @@ already attempted (regardless of verdict).
   - lookup_100k:      +0.04% / +0.22% / +0.17%   (within noise)
   - modify_10k:       -1.10% / -0.34% / -1.10%   (within noise)
   - reopen_10k:       -10.96% / -10.97% / -10.43%   (KEPT — all three < -3%)
-- **Verdict:** KEPT.
+- **Verdict:** KEPT (deep-win).
 - **Why:** reopen_10k drops from ~209us to ~188us, reproduced to within 0.5% across three independent runs against the fixed pre-change baseline. The win comes from eliminating per-record `memcpy buffer→payload Vec` and the `BufReader` refill/copy overhead — `bincode::deserialize` now operates on a borrowed slice straight from the slurped buffer. Memory profile changes (one Vec sized to the log) but for our workloads logs are bounded and well under available RAM; for an extremely large log a streaming path may be worth adding back as a fallback.
 - **Follow-ups / dead ends:** Closed: `BufReader`-based replay. Open: memory-mapping the log instead of slurping (would skip the userspace copy too — but `mmap` is HIGH risk per the skill). Open: hand-rolled fixed-prefix codec for primitive K/V — bincode now dominates the per-record cost; replacing it with a u64-LE encoder would change the on-disk format and so is a separate, MEDIUM-risk hypothesis.
 
@@ -498,7 +499,7 @@ already attempted (regardless of verdict).
   - lookup_100k:      -0.43% / -0.01% / -0.25%   (within noise)
   - modify_10k:       -0.08% / +0.96% / +0.86%   (within noise)
   - reopen_10k:       -41.20% / -41.28% / -41.18%   (KEPT — all three far below -3%)
-- **Verdict:** KEPT.
+- **Verdict:** KEPT (deep-win).
 - **Why:** Massive, dead-flat improvement on `reopen_10k` (~150us shaved off ~360us p50) reproduced to within 0.1% across three independent runs, with all other scenarios within the ±1% noise band — pre-sizing avoids the geometric rehash sequence on the replay path. The 24 bytes/record divisor matches a `Insert<u64,u64>` record; larger records over-reserve harmlessly because IndexMap only allocates one hash-table backing array and never shrinks during replay.
 - **Follow-ups / dead ends:** Closed: file-size-based replay capacity hint. Open: tuning the divisor for string-heavy workloads (currently over-reserves for `insert_2k_strings`-shaped data — wastes some memory, doesn't help further). Open: pre-sizing the replay `payload` Vec from the largest length seen so far (separate hypothesis, smaller potential payoff now that reopen_10k is already much faster). Open: faster hasher (foldhash/ahash) — would touch mutation paths too, MEDIUM risk because it adds a dep.
 
@@ -519,7 +520,7 @@ already attempted (regardless of verdict).
   - lookup_100k:      -0.11% / +0.35% / +0.35%   (within noise)
   - modify_10k:       -0.39% / -0.14% / -0.98%   (within noise)
   - reopen_10k:       -4.79% / -4.71% / -4.54%   (KEPT — all three < -3%)
-- **Verdict:** KEPT.
+- **Verdict:** KEPT (deep-win).
 - **Why:** Gate is satisfied — `reopen_10k` improves consistently > 3% across all three independent runs against the fixed pre-change baseline, and no scenario regresses past the +2% noise band in any run. The win shows up on the read/replay path rather than the targeted write path — likely a codegen or inlining side-effect after the `flush_scratch` rewrite (the on-disk format is identical and the replay loop was not touched). Mutation paths came out flat; the change is a refactor that incidentally pays out elsewhere. The new `bench_results.json` from run 3 becomes the next baseline.
 - **Follow-ups / dead ends:** Closed: collapsing length+payload into a single `write_all` via the scratch-prefix trick. Open: `compact()` still does two separate `write_all`s per record (length, payload) on a non-hot path — could be unified the same way if compaction ever becomes hot. Open: pre-sizing the replay `IndexMap` from on-disk file size — independent hypothesis worth a separate attempt now that reopen_10k baseline is faster.
 
@@ -537,7 +538,7 @@ Append entries below in reverse-chronological order. Template:
 - **Δ p50 across 3 confirming runs:**
   - scenario_a: -5.1% / -4.8% / -5.4%   (KEPT — all three < -3%)
   - scenario_b: +0.2% / -0.4% / +0.1%   (within noise; not a regression)
-- **Verdict:** KEPT / REVERTED / INCONCLUSIVE
+- **Verdict:** KEPT (deep-win) / KEPT (broad-win) / REVERTED / INCONCLUSIVE
 - **Why:** explanation.
 - **Follow-ups / dead ends:** anything a future attempt should NOT retry, or a related idea worth a separate hypothesis.
 -->
