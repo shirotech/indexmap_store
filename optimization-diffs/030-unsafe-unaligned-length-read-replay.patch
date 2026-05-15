@@ -1,0 +1,20 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 6ca396f..2c58035 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -172,8 +172,13 @@ where
+ 
+             let mut offset: usize = 0;
+             while offset + LEN_BYTES <= buf.len() {
+-                let len = u32::from_le_bytes(buf[offset..offset + LEN_BYTES].try_into().unwrap())
+-                    as usize;
++                // SAFETY: the loop condition `offset + LEN_BYTES <= buf.len()`
++                // guarantees the 4-byte read starting at `buf.as_ptr().add(offset)`
++                // is fully within the allocation and within the initialized prefix
++                // (the file was read into `buf` via `read_to_end`).
++                let len = u32::from_le(unsafe {
++                    std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const u32)
++                }) as usize;
+                 let payload_start = offset + LEN_BYTES;
+                 let payload_end = payload_start + len;
+                 if payload_end > buf.len() || len == 0 {
