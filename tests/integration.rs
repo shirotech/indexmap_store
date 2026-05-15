@@ -1,6 +1,6 @@
 use indexmap_store::{IndexMapStore, StoreConfig};
 use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 
 fn store_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
     dir.path().join("store.log")
@@ -218,10 +218,4 @@ fn modify_missing_returns_none() {
     let mut s: IndexMapStore<String, u64> = IndexMapStore::open(store_path(&dir)).unwrap();
     let r: Option<()> = s.modify(&"missing".to_string(), |_| {}).unwrap();
     assert!(r.is_none());
-}
-
-// Squelch the unused import on platforms where Seek isn't otherwise referenced.
-#[allow(dead_code)]
-fn _force_use(mut f: std::fs::File) {
-    let _ = f.seek(SeekFrom::Start(0));
 }

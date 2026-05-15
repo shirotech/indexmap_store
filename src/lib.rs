@@ -283,9 +283,7 @@ where
     /// [`IndexMap::insert`] semantics).
     #[inline]
     pub fn insert(&mut self, k: K, v: V) -> io::Result<Option<V>> {
-        self.scratch.clear();
-        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
-        self.scratch.push(TAG_INSERT);
+        begin_record(&mut self.scratch, TAG_INSERT);
         bincode::serialize_into(&mut self.scratch, &(&k, &v)).map_err(serialize_err)?;
         self.flush_scratch()?;
         let prev = self.map.insert(k, v);
@@ -304,9 +302,7 @@ where
         if !self.map.contains_key(k) {
             return Ok(None);
         }
-        self.scratch.clear();
-        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
-        self.scratch.push(TAG_REMOVE);
+        begin_record(&mut self.scratch, TAG_REMOVE);
         bincode::serialize_into(&mut self.scratch, k).map_err(serialize_err)?;
         self.flush_scratch()?;
         let prev = self.map.shift_remove(k);
@@ -333,9 +329,7 @@ where
         let result = f(v_mut);
         let v_ref: &V = v_mut;
 
-        self.scratch.clear();
-        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
-        self.scratch.push(TAG_INSERT);
+        begin_record(&mut self.scratch, TAG_INSERT);
         bincode::serialize_into(&mut self.scratch, &(k, v_ref)).map_err(serialize_err)?;
 
         self.flush_scratch()?;
@@ -428,4 +422,11 @@ impl<K, V> Drop for IndexMapStore<K, V> {
 #[inline]
 fn serialize_err(e: bincode::Error) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, e)
+}
+
+#[inline]
+fn begin_record(scratch: &mut Vec<u8>, tag: u8) {
+    scratch.clear();
+    scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+    scratch.push(tag);
 }
