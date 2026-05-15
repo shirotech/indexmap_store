@@ -387,7 +387,15 @@ where
         // Callers reserve LEN_BYTES at the front of `scratch`; fill the length
         // in place so the length-prefix and payload land in a single write.
         let payload_len = (self.scratch.len() - LEN_BYTES) as u32;
-        self.scratch[..LEN_BYTES].copy_from_slice(&payload_len.to_le_bytes());
+        // SAFETY: `begin_record` reserves and initializes ≥ LEN_BYTES + 1 bytes
+        // at the head of `scratch` before bincode appends the payload, so the
+        // first four bytes are always within `scratch.len()` and allocated.
+        unsafe {
+            std::ptr::write_unaligned(
+                self.scratch.as_mut_ptr() as *mut u32,
+                payload_len.to_le(),
+            );
+        }
         self.log.write_all(&self.scratch)?;
         self.log_bytes += self.scratch.len() as u64;
         if self.cfg.sync_on_write {
@@ -427,6 +435,15 @@ fn serialize_err(e: bincode::Error) -> io::Error {
 #[inline]
 fn begin_record(scratch: &mut Vec<u8>, tag: u8) {
     scratch.clear();
-    scratch.extend_from_slice(&[0u8; LEN_BYTES]);
-    scratch.push(tag);
+    scratch.reserve(LEN_BYTES + 1);
+    // SAFETY: `reserve` guarantees capacity ≥ LEN_BYTES + 1 from offset 0.
+    // We write the placeholder length (overwritten by `flush_scratch`) and the
+    // tag as a single u32 + u8 store, then commit `len` to 5. The whole
+    // window is fully initialized before `set_len` returns.
+    unsafe {
+        let p = scratch.as_mut_ptr();
+        std::ptr::write_unaligned(p as *mut u32, 0u32);
+        std::ptr::write(p.add(LEN_BYTES), tag);
+        scratch.set_len(LEN_BYTES + 1);
+    }
 }
