@@ -1,0 +1,13 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index ec15d76..1b21048 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -329,7 +329,7 @@ where
+         Ok(())
+     }
+ 
+-    #[inline]
++    #[inline(always)]
+     fn flush_scratch(&mut self) -> io::Result<()> {
+         // Callers reserve LEN_BYTES at the front of `scratch`; fill the length
+         // in place so the length-prefix and payload land in a single write.
