@@ -58,7 +58,7 @@ impl Default for StoreConfig {
 
 /// A mutable, persistent [`IndexMap`].
 pub struct IndexMapStore<K, V> {
-    map: IndexMap<K, V>,
+    map: IndexMap<K, V, ahash::RandomState>,
     log: BufWriter<File>,
     path: PathBuf,
     log_bytes: u64,
@@ -87,7 +87,8 @@ where
             fs::create_dir_all(parent)?;
         }
 
-        let mut map: IndexMap<K, V> = IndexMap::new();
+        let mut map: IndexMap<K, V, ahash::RandomState> =
+            IndexMap::with_hasher(ahash::RandomState::new());
         let mut valid_len: u64 = 0;
         let mut total_records: u64 = 0;
 
@@ -214,7 +215,7 @@ where
     /// Borrow the underlying [`IndexMap`] read-only. All mutations must go
     /// through the store API so the log stays in sync.
     #[inline]
-    pub fn as_indexmap(&self) -> &IndexMap<K, V> {
+    pub fn as_indexmap(&self) -> &IndexMap<K, V, ahash::RandomState> {
         &self.map
     }
 
