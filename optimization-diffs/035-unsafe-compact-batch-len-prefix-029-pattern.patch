@@ -1,0 +1,31 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 6ca396f..35eb3db 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -360,9 +360,24 @@ where
+             let mut buf = Vec::with_capacity(256);
+             for (k, v) in &self.map {
+                 buf.clear();
+-                buf.push(TAG_INSERT);
++                buf.reserve(LEN_BYTES + 1);
++                // SAFETY: `reserve` guarantees capacity ≥ LEN_BYTES + 1 from
++                // offset 0. Writes the placeholder length (overwritten below
++                // after bincode appends) and the tag, then commits len to 5.
++                // Mirrors the 029-kept pattern from `begin_record`.
++                unsafe {
++                    let p: *mut u8 = buf.as_mut_ptr();
++                    std::ptr::write_unaligned(p as *mut u32, 0u32);
++                    std::ptr::write(p.add(LEN_BYTES), TAG_INSERT);
++                    buf.set_len(LEN_BYTES + 1);
++                }
+                 bincode::serialize_into(&mut buf, &(k, v)).map_err(serialize_err)?;
+-                writer.write_all(&(buf.len() as u32).to_le_bytes())?;
++                let payload_len = (buf.len() - LEN_BYTES) as u32;
++                // SAFETY: `buf.len()` is now ≥ LEN_BYTES + 1 (set above + bincode
++                // append). First LEN_BYTES bytes are within the initialized region.
++                unsafe {
++                    std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u32, payload_len.to_le());
++                }
+                 writer.write_all(&buf)?;
+             }
+             writer.flush()?;
