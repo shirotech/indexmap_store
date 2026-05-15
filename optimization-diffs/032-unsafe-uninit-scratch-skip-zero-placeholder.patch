@@ -1,0 +1,27 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 6ca396f..2be1a6f 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -436,14 +436,15 @@ fn serialize_err(e: bincode::Error) -> io::Error {
+ fn begin_record(scratch: &mut Vec<u8>, tag: u8) {
+     scratch.clear();
+     scratch.reserve(LEN_BYTES + 1);
+-    // SAFETY: `reserve` guarantees capacity ≥ LEN_BYTES + 1 from offset 0.
+-    // We write the placeholder length (overwritten by `flush_scratch`) and the
+-    // tag as a single u32 + u8 store, then commit `len` to 5. The whole
+-    // window is fully initialized before `set_len` returns.
++    // SAFETY: `reserve` guarantees capacity ≥ LEN_BYTES + 1. We write the tag
++    // at index LEN_BYTES, then `set_len(LEN_BYTES + 1)`. Bytes 0..LEN_BYTES
++    // are left uninitialized here; `flush_scratch` writes them in place (via
++    // `ptr::write_unaligned`) before any code reads from `scratch`, and
++    // bincode's `serialize_into` only appends past `len` (does not read
++    // existing bytes). The intermediate `Vec` is therefore never observed
++    // with the uninit prefix.
+     unsafe {
+-        let p = scratch.as_mut_ptr();
+-        std::ptr::write_unaligned(p as *mut u32, 0u32);
+-        std::ptr::write(p.add(LEN_BYTES), tag);
++        std::ptr::write(scratch.as_mut_ptr().add(LEN_BYTES), tag);
+         scratch.set_len(LEN_BYTES + 1);
+     }
+ }
