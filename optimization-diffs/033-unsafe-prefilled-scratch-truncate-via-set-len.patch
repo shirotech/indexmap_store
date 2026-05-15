@@ -1,0 +1,44 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 6ca396f..670631a 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -219,7 +219,14 @@ where
+             live_records,
+             total_records,
+             cfg,
+-            scratch: Vec::with_capacity(256),
++            scratch: {
++                let mut s: Vec<u8> = Vec::with_capacity(256);
++                // Pre-seed the LEN_BYTES placeholder + tag slot so `begin_record`
++                // can `set_len(LEN_BYTES + 1)` as a pure truncation on every
++                // subsequent call (no per-call init of the header window).
++                s.resize(LEN_BYTES + 1, 0);
++                s
++            },
+         })
+     }
+ 
+@@ -434,16 +441,14 @@ fn serialize_err(e: bincode::Error) -> io::Error {
+ 
+ #[inline]
+ fn begin_record(scratch: &mut Vec<u8>, tag: u8) {
+-    scratch.clear();
+-    scratch.reserve(LEN_BYTES + 1);
+-    // SAFETY: `reserve` guarantees capacity ≥ LEN_BYTES + 1 from offset 0.
+-    // We write the placeholder length (overwritten by `flush_scratch`) and the
+-    // tag as a single u32 + u8 store, then commit `len` to 5. The whole
+-    // window is fully initialized before `set_len` returns.
++    // SAFETY: the store constructor pre-seeds `scratch` so `len() >= LEN_BYTES + 1`,
++    // and every `flush_scratch` leaves `scratch.len()` ≥ LEN_BYTES + 1. Therefore
++    // `set_len(LEN_BYTES + 1)` is always a non-growing truncation here — no
++    // initialization requirement. The byte at index LEN_BYTES is within the new
++    // len and was initialized by either the constructor's `resize(_, 0)` or the
++    // previous call's tag write; we then overwrite it with the new tag.
+     unsafe {
+-        let p = scratch.as_mut_ptr();
+-        std::ptr::write_unaligned(p as *mut u32, 0u32);
+-        std::ptr::write(p.add(LEN_BYTES), tag);
+         scratch.set_len(LEN_BYTES + 1);
++        *scratch.get_unchecked_mut(LEN_BYTES) = tag;
+     }
+ }
