@@ -1,0 +1,30 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 6ca396f..13f3152 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -179,6 +179,25 @@ where
+                 if payload_end > buf.len() || len == 0 {
+                     break;
+                 }
++                // Prefetch the next record's first cache line so the load
++                // overlaps with the current record's bincode deserialize.
++                #[cfg(target_arch = "x86_64")]
++                {
++                    let next = payload_end;
++                    if next < buf.len() {
++                        // SAFETY: `buf.as_ptr().add(next)` is within the
++                        // allocated region (capacity >= buf.len() > next);
++                        // `_mm_prefetch` is documented as side-effect-free,
++                        // accepts any pointer (even non-dereferenceable), and
++                        // can never violate aliasing.
++                        unsafe {
++                            std::arch::x86_64::_mm_prefetch(
++                                buf.as_ptr().add(next) as *const i8,
++                                std::arch::x86_64::_MM_HINT_T0,
++                            );
++                        }
++                    }
++                }
+                 let tag = buf[payload_start];
+                 let body = &buf[payload_start + 1..payload_end];
+                 match tag {
