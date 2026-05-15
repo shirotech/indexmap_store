@@ -1,0 +1,10 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -286,6 +286,7 @@
+     /// Rewrite the log to contain exactly one `Insert` per live entry, then
+     /// atomically replace the original. Safe to call at any time; runs
+     /// automatically when the dead-record ratio crosses the threshold.
++    #[cold]
+     pub fn compact(&mut self) -> io::Result<()> {
+         self.log.flush()?;
+         let tmp_path = self.path.with_extension("compact.tmp");

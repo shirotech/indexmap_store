@@ -73,6 +73,21 @@ Minimal diff, one hypothesis, no drive-by refactors or comment cleanups. If the 
 
 ---
 
+## 4a. Capture the diff (mandatory, before any gate runs)
+
+Save the implemented change as a patch file under `optimization-diffs/<slug>.patch` at the crate root, **before** running tests or benches. The patch must survive the §8 revert so the attempt can be resurfaced later (bulks, retries, partial-stack experiments). The revert in §8 explicitly leaves this directory untouched.
+
+```bash
+mkdir -p optimization-diffs
+git diff -- src/ tests/ benches/ Cargo.toml Cargo.lock > optimization-diffs/<slug>.patch
+# Sanity: must be non-empty (a no-op attempt is a bug)
+test -s optimization-diffs/<slug>.patch || { echo "empty diff — abort"; exit 1; }
+```
+
+If the change adds a brand-new source file, `git add -N <new-file>` first so `git diff` includes it (the `-- src/ tests/ benches/` pathspec already covers the directories).
+
+---
+
 ## 5. Test gate (mandatory)
 
 Run both:
@@ -134,6 +149,8 @@ git checkout -- src/ tests/ benches/ Cargo.toml Cargo.lock
 git clean -fd src/ tests/ benches/
 ```
 
+`optimization-diffs/` is deliberately NOT in the revert paths — the saved `<slug>.patch` from §4a survives so the attempt can be resurfaced.
+
 Restore the pre-change baseline so it stays the canonical reference:
 
 ```bash
@@ -148,10 +165,10 @@ For KEPT verdicts: do **not** revert. The post-change `bench_results.json` from 
 
 Two updates:
 
-**(a) Index table — add one row at the top of the table body** (most-recent-first):
+**(a) Index table — add one row at the top of the table body** (most-recent-first). The Diff column links to the patch saved in §4a:
 
 ```
-| 2026-05-14 | preallocate-replay-payload | src/lib.rs | LOW | KEPT | -4.1% on reopen_10k, others noise |
+| 2026-05-14 | preallocate-replay-payload | src/lib.rs | LOW | KEPT | -4.1% on reopen_10k, others noise | [diff](optimization-diffs/preallocate-replay-payload.patch) |
 ```
 
 **(b) Detailed entry — append below the Index table** using the template comment in OPTIMIZATIONS.md. Include:
@@ -159,6 +176,7 @@ Two updates:
 - Hypothesis (one sentence)
 - Risk tag
 - Files touched
+- **Diff:** `[optimization-diffs/<slug>.patch](optimization-diffs/<slug>.patch)` — must be present even when REVERTED/INCONCLUSIVE so the change can be replayed in a future bulk/retry
 - Baseline p50 for every scenario
 - Three Δ p50 values per scenario, comma-separated, with the verdict reasoning visible at a glance
 - Verdict + why
@@ -169,11 +187,13 @@ Two updates:
 ## 10. Commit
 
 ```bash
-git add OPTIMIZATIONS.md bench_results.json
+git add OPTIMIZATIONS.md bench_results.json optimization-diffs/<slug>.patch
 # If KEPT, also stage source changes:
 git add src/ tests/ benches/ Cargo.toml Cargo.lock
 git commit -m "optimize: <slug> [<VERDICT>]"
 ```
+
+The `<slug>.patch` is committed for every verdict, so REVERTED/INCONCLUSIVE attempts that exist only in the markdown log still have a replayable source diff in the repo.
 
 Suggested message bodies:
 
@@ -192,4 +212,5 @@ Do **not** push.
 - Never disable tests, weaken assertions, or skip the clippy gate.
 - Never reduce `BENCH_SAMPLES` below 501 during the 3-run validation.
 - Never overwrite `/tmp/optimize/baseline.json` mid-run.
+- Never skip §4a (diff capture) or include `optimization-diffs/` in the §8 revert paths — the patch must survive for future resurfacing.
 - If you cannot find a plausible untried hypothesis, say so explicitly and exit — do not propose something already in the Index table.

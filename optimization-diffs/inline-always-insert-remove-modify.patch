@@ -1,0 +1,29 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -222,7 +222,7 @@
+     /// Insert `k -> v`, returning the previous value if any. If `k` already
+     /// existed the entry keeps its insertion position (standard
+     /// [`IndexMap::insert`] semantics).
+-    #[inline]
++    #[inline(always)]
+     pub fn insert(&mut self, k: K, v: V) -> io::Result<Option<V>> {
+         self.scratch.clear();
+         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+@@ -241,7 +241,7 @@
+ 
+     /// Remove the entry for `k` (shift-remove — preserves the order of the
+     /// remaining entries). Returns the previous value if any.
+-    #[inline]
++    #[inline(always)]
+     pub fn remove(&mut self, k: &K) -> io::Result<Option<V>> {
+         if !self.map.contains_key(k) {
+             return Ok(None);
+@@ -264,7 +264,7 @@
+     /// Edit the value for `k` in place via a closure. The post-edit value is
+     /// appended to the log as a fresh `Insert` record, so the change survives
+     /// a restart. Returns `None` if `k` is absent, else `Some(f's return)`.
+-    #[inline]
++    #[inline(always)]
+     pub fn modify<F, R>(&mut self, k: &K, f: F) -> io::Result<Option<R>>
+     where
+         F: FnOnce(&mut V) -> R,

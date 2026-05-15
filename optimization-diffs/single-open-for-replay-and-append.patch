@@ -1,0 +1,49 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -101,9 +101,19 @@
+         let mut valid_len: u64 = 0;
+         let mut total_records: u64 = 0;
+ 
+-        if path.exists() {
+-            let mut file = File::open(&path)?;
+-            let total_on_disk = file.metadata()?.len();
++        // Single open: read + append + create. `O_APPEND` only affects writes,
++        // so the initial `read_to_end` at offset 0 still slurps the existing
++        // log. The same handle is reused for the torn-tail `set_len` and the
++        // runtime BufWriter appends — saving one to two `openat` syscalls per
++        // `open_with`.
++        let mut file = OpenOptions::new()
++            .read(true)
++            .append(true)
++            .create(true)
++            .open(&path)?;
++        let total_on_disk = file.metadata()?.len();
++
++        if total_on_disk > 0 {
+             // Hint the IndexMap capacity from the on-disk size so the replay
+             // loop avoids the geometric grow-rehash sequence. 24 bytes/record
+             // matches the smallest Insert<u64,u64> record (4-byte length +
+@@ -117,7 +127,6 @@
+             // buffer, no BufReader refills).
+             let mut buf: Vec<u8> = Vec::with_capacity(total_on_disk as usize);
+             file.read_to_end(&mut buf)?;
+-            drop(file);
+ 
+             let mut offset: usize = 0;
+             while offset + LEN_BYTES <= buf.len() {
+@@ -147,13 +156,11 @@
+             }
+ 
+             if valid_len != total_on_disk {
+-                let f = OpenOptions::new().write(true).open(&path)?;
+-                f.set_len(valid_len)?;
+-                f.sync_all()?;
++                file.set_len(valid_len)?;
++                file.sync_all()?;
+             }
+         }
+ 
+-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+         let live_records = map.len() as u64;
+ 
+         Ok(Self {

@@ -1,0 +1,282 @@
+commit 03f571379963c8ef87c86f12379d191c44d75da4
+Author: shirotech <van@shirotech.com>
+Date:   Thu May 14 19:59:02 2026 +0000
+
+    optimize: bundle-inconclusive-attempts [KEPT] -1.56% to -2.02% on reopen_10k
+    
+    Stacked 4 of 5 INCONCLUSIVE attempts together on user request:
+    - inline-enum-tag-u8 (manual 1-byte tag, drops LogRef/LogOwned enums)
+    - inline-hot-path-functions (#[inline] on accessors, mutations, helpers)
+    - single-open-for-replay-and-append (one handle for slurp + set_len + appends)
+    - skip-path-exists-probe (subsumed by single-open)
+    
+    presize-replay-payload-vec excluded as obsolete (slurp-log-into-vec
+    removed the per-record payload buffer it targeted).
+    
+    reopen_10k -1.56% / -1.80% / -2.02% (clears -1.5% gate in all 3 runs).
+    modify_10k drifts -1.24% to -1.69% (directional but inconsistent).
+    Other scenarios within noise.
+    
+    Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 2e26cee..e784696 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -19,25 +19,15 @@
+ //! The store owns the file; concurrent writers are not supported.
+ 
+ use indexmap::IndexMap;
+-use serde::{Deserialize, Serialize, de::DeserializeOwned};
++use serde::{Serialize, de::DeserializeOwned};
+ use std::fs::{self, File, OpenOptions};
+ use std::hash::Hash;
+ use std::io::{self, BufWriter, ErrorKind, Read, Write};
+ use std::path::{Path, PathBuf};
+ 
+ const LEN_BYTES: usize = 4;
+-
+-#[derive(Serialize)]
+-enum LogRef<'a, K, V> {
+-    Insert(&'a K, &'a V),
+-    Remove(&'a K),
+-}
+-
+-#[derive(Deserialize)]
+-enum LogOwned<K, V> {
+-    Insert(K, V),
+-    Remove(K),
+-}
++const TAG_INSERT: u8 = 0;
++const TAG_REMOVE: u8 = 1;
+ 
+ /// Configuration for an [`IndexMapStore`].
+ #[derive(Clone, Debug)]
+@@ -101,23 +91,24 @@ where
+         let mut valid_len: u64 = 0;
+         let mut total_records: u64 = 0;
+ 
+-        if path.exists() {
+-            let mut file = File::open(&path)?;
+-            let total_on_disk = file.metadata()?.len();
+-            // Hint the IndexMap capacity from the on-disk size so the replay
+-            // loop avoids the geometric grow-rehash sequence. 24 bytes/record
+-            // matches the smallest Insert<u64,u64> record (4-byte length +
+-            // 20-byte payload); larger records over-reserve harmlessly.
++        // Single open: read+append+create. O_APPEND only affects writes, so
++        // the initial read_to_end at offset 0 still works. set_len for the
++        // torn-tail case also works on this handle (ftruncate requires write
++        // access; O_APPEND satisfies that).
++        let mut file = OpenOptions::new()
++            .read(true)
++            .append(true)
++            .create(true)
++            .open(&path)?;
++        let total_on_disk = file.metadata()?.len();
++
++        if total_on_disk > 0 {
+             let capacity_hint = (total_on_disk / 24) as usize;
+             if capacity_hint > 0 {
+                 map.reserve(capacity_hint);
+             }
+-            // Slurp the log so the replay loop can borrow length-prefixed
+-            // payload slices directly (no per-record memcpy into a payload
+-            // buffer, no BufReader refills).
+             let mut buf: Vec<u8> = Vec::with_capacity(total_on_disk as usize);
+             file.read_to_end(&mut buf)?;
+-            drop(file);
+ 
+             let mut offset: usize = 0;
+             while offset + LEN_BYTES <= buf.len() {
+@@ -126,20 +117,27 @@ where
+                 ) as usize;
+                 let payload_start = offset + LEN_BYTES;
+                 let payload_end = payload_start + len;
+-                if payload_end > buf.len() {
++                if payload_end > buf.len() || len == 0 {
+                     break;
+                 }
+-                let rec: LogOwned<K, V> = match bincode::deserialize(&buf[payload_start..payload_end]) {
+-                    Ok(r) => r,
+-                    Err(_) => break,
+-                };
+-                match rec {
+-                    LogOwned::Insert(k, v) => {
++                let tag = buf[payload_start];
++                let body = &buf[payload_start + 1..payload_end];
++                match tag {
++                    TAG_INSERT => {
++                        let (k, v): (K, V) = match bincode::deserialize(body) {
++                            Ok(r) => r,
++                            Err(_) => break,
++                        };
+                         map.insert(k, v);
+                     }
+-                    LogOwned::Remove(k) => {
++                    TAG_REMOVE => {
++                        let k: K = match bincode::deserialize(body) {
++                            Ok(r) => r,
++                            Err(_) => break,
++                        };
+                         map.shift_remove(&k);
+                     }
++                    _ => break,
+                 }
+                 valid_len += (LEN_BYTES + len) as u64;
+                 total_records += 1;
+@@ -147,13 +145,11 @@ where
+             }
+ 
+             if valid_len != total_on_disk {
+-                let f = OpenOptions::new().write(true).open(&path)?;
+-                f.set_len(valid_len)?;
+-                f.sync_all()?;
++                file.set_len(valid_len)?;
++                file.sync_all()?;
+             }
+         }
+ 
+-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+         let live_records = map.len() as u64;
+ 
+         Ok(Self {
+@@ -169,47 +165,56 @@ where
+     }
+ 
+     /// Number of live entries.
++    #[inline]
+     pub fn len(&self) -> usize {
+         self.map.len()
+     }
+ 
+     /// True if there are no live entries.
++    #[inline]
+     pub fn is_empty(&self) -> bool {
+         self.map.is_empty()
+     }
+ 
+     /// True if `k` is present.
++    #[inline]
+     pub fn contains_key(&self, k: &K) -> bool {
+         self.map.contains_key(k)
+     }
+ 
+     /// Look up a value by key.
++    #[inline]
+     pub fn get(&self, k: &K) -> Option<&V> {
+         self.map.get(k)
+     }
+ 
+     /// Look up a (key, value) pair by insertion index.
++    #[inline]
+     pub fn get_index(&self, idx: usize) -> Option<(&K, &V)> {
+         self.map.get_index(idx)
+     }
+ 
+     /// Iterate entries in insertion order.
++    #[inline]
+     pub fn iter(&self) -> indexmap::map::Iter<'_, K, V> {
+         self.map.iter()
+     }
+ 
+     /// Iterate keys in insertion order.
++    #[inline]
+     pub fn keys(&self) -> indexmap::map::Keys<'_, K, V> {
+         self.map.keys()
+     }
+ 
+     /// Iterate values in insertion order.
++    #[inline]
+     pub fn values(&self) -> indexmap::map::Values<'_, K, V> {
+         self.map.values()
+     }
+ 
+     /// Borrow the underlying [`IndexMap`] read-only. All mutations must go
+     /// through the store API so the log stays in sync.
++    #[inline]
+     pub fn as_index_map(&self) -> &IndexMap<K, V> {
+         &self.map
+     }
+@@ -217,10 +222,12 @@ where
+     /// Insert `k -> v`, returning the previous value if any. If `k` already
+     /// existed the entry keeps its insertion position (standard
+     /// [`IndexMap::insert`] semantics).
++    #[inline]
+     pub fn insert(&mut self, k: K, v: V) -> io::Result<Option<V>> {
+         self.scratch.clear();
+         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+-        bincode::serialize_into(&mut self.scratch, &LogRef::Insert::<K, V>(&k, &v))
++        self.scratch.push(TAG_INSERT);
++        bincode::serialize_into(&mut self.scratch, &(&k, &v))
+             .map_err(serialize_err)?;
+         self.flush_scratch()?;
+         let prev = self.map.insert(k, v);
+@@ -234,13 +241,15 @@ where
+ 
+     /// Remove the entry for `k` (shift-remove — preserves the order of the
+     /// remaining entries). Returns the previous value if any.
++    #[inline]
+     pub fn remove(&mut self, k: &K) -> io::Result<Option<V>> {
+         if !self.map.contains_key(k) {
+             return Ok(None);
+         }
+         self.scratch.clear();
+         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+-        bincode::serialize_into(&mut self.scratch, &LogRef::Remove::<K, V>(k))
++        self.scratch.push(TAG_REMOVE);
++        bincode::serialize_into(&mut self.scratch, k)
+             .map_err(serialize_err)?;
+         self.flush_scratch()?;
+         let prev = self.map.shift_remove(k);
+@@ -255,6 +264,7 @@ where
+     /// Edit the value for `k` in place via a closure. The post-edit value is
+     /// appended to the log as a fresh `Insert` record, so the change survives
+     /// a restart. Returns `None` if `k` is absent, else `Some(f's return)`.
++    #[inline]
+     pub fn modify<F, R>(&mut self, k: &K, f: F) -> io::Result<Option<R>>
+     where
+         F: FnOnce(&mut V) -> R,
+@@ -268,7 +278,8 @@ where
+ 
+         self.scratch.clear();
+         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+-        bincode::serialize_into(&mut self.scratch, &LogRef::Insert::<K, V>(k, v_ref))
++        self.scratch.push(TAG_INSERT);
++        bincode::serialize_into(&mut self.scratch, &(k, v_ref))
+             .map_err(serialize_err)?;
+ 
+         self.flush_scratch()?;
+@@ -299,7 +310,8 @@ where
+             let mut buf = Vec::with_capacity(256);
+             for (k, v) in &self.map {
+                 buf.clear();
+-                bincode::serialize_into(&mut buf, &LogRef::Insert::<K, V>(k, v))
++                buf.push(TAG_INSERT);
++                bincode::serialize_into(&mut buf, &(k, v))
+                     .map_err(serialize_err)?;
+                 writer.write_all(&(buf.len() as u32).to_le_bytes())?;
+                 writer.write_all(&buf)?;
+@@ -321,6 +333,7 @@ where
+         Ok(())
+     }
+ 
++    #[inline]
+     fn flush_scratch(&mut self) -> io::Result<()> {
+         // Callers reserve LEN_BYTES at the front of `scratch`; fill the length
+         // in place so the length-prefix and payload land in a single write.
+@@ -335,6 +348,7 @@ where
+         Ok(())
+     }
+ 
++    #[inline]
+     fn maybe_compact(&mut self) -> io::Result<()> {
+         if self.log_bytes < self.cfg.min_compact_bytes {
+             return Ok(());
+@@ -356,6 +370,7 @@ impl<K, V> Drop for IndexMapStore<K, V> {
+     }
+ }
+ 
++#[inline]
+ fn serialize_err(e: bincode::Error) -> io::Error {
+     io::Error::new(ErrorKind::InvalidData, e)
+ }

@@ -1,0 +1,20 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -307,13 +307,15 @@
+                 .write(true)
+                 .open(&tmp_path)?;
+             let mut writer = BufWriter::with_capacity(self.cfg.buf_capacity, tmp);
+-            let mut buf = Vec::with_capacity(256);
++            let mut buf: Vec<u8> = Vec::with_capacity(256);
+             for (k, v) in &self.map {
+                 buf.clear();
++                buf.extend_from_slice(&[0u8; LEN_BYTES]);
+                 buf.push(TAG_INSERT);
+                 bincode::serialize_into(&mut buf, &(k, v))
+                     .map_err(serialize_err)?;
+-                writer.write_all(&(buf.len() as u32).to_le_bytes())?;
++                let payload_len = (buf.len() - LEN_BYTES) as u32;
++                buf[..LEN_BYTES].copy_from_slice(&payload_len.to_le_bytes());
+                 writer.write_all(&buf)?;
+             }
+             writer.flush()?;

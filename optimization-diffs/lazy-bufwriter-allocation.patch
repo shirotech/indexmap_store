@@ -1,0 +1,92 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -59,7 +59,8 @@
+ /// A mutable, persistent [`IndexMap`].
+ pub struct IndexMapStore<K, V> {
+     map: IndexMap<K, V>,
+-    log: BufWriter<File>,
++    log: Option<BufWriter<File>>,
++    file: Option<File>,
+     path: PathBuf,
+     log_bytes: u64,
+     live_records: u64,
+@@ -154,7 +155,8 @@
+ 
+         Ok(Self {
+             map,
+-            log: BufWriter::with_capacity(cfg.buf_capacity, file),
++            log: None,
++            file: Some(file),
+             path,
+             log_bytes: valid_len,
+             live_records,
+@@ -290,15 +292,21 @@
+ 
+     /// Flush the internal buffer and fsync the file.
+     pub fn flush(&mut self) -> io::Result<()> {
+-        self.log.flush()?;
+-        self.log.get_ref().sync_data()
++        if let Some(log) = self.log.as_mut() {
++            log.flush()?;
++            log.get_ref().sync_data()
++        } else {
++            Ok(())
++        }
+     }
+ 
+     /// Rewrite the log to contain exactly one `Insert` per live entry, then
+     /// atomically replace the original. Safe to call at any time; runs
+     /// automatically when the dead-record ratio crosses the threshold.
+     pub fn compact(&mut self) -> io::Result<()> {
+-        self.log.flush()?;
++        if let Some(log) = self.log.as_mut() {
++            log.flush()?;
++        }
+         let tmp_path = self.path.with_extension("compact.tmp");
+         {
+             let tmp = OpenOptions::new()
+@@ -326,7 +334,8 @@
+             .append(true)
+             .open(&self.path)?;
+         let new_len = file.metadata()?.len();
+-        self.log = BufWriter::with_capacity(self.cfg.buf_capacity, file);
++        self.log = Some(BufWriter::with_capacity(self.cfg.buf_capacity, file));
++        self.file = None;
+         self.log_bytes = new_len;
+         self.live_records = self.map.len() as u64;
+         self.total_records = self.map.len() as u64;
+@@ -339,11 +348,20 @@
+         // in place so the length-prefix and payload land in a single write.
+         let payload_len = (self.scratch.len() - LEN_BYTES) as u32;
+         self.scratch[..LEN_BYTES].copy_from_slice(&payload_len.to_le_bytes());
+-        self.log.write_all(&self.scratch)?;
++        // Lazy-init the BufWriter on first write.
++        if self.log.is_none() {
++            let file = self
++                .file
++                .take()
++                .expect("invariant: log or file is Some");
++            self.log = Some(BufWriter::with_capacity(self.cfg.buf_capacity, file));
++        }
++        let log = self.log.as_mut().unwrap();
++        log.write_all(&self.scratch)?;
+         self.log_bytes += self.scratch.len() as u64;
+         if self.cfg.sync_on_write {
+-            self.log.flush()?;
+-            self.log.get_ref().sync_data()?;
++            log.flush()?;
++            log.get_ref().sync_data()?;
+         }
+         Ok(())
+     }
+@@ -366,7 +384,9 @@
+ 
+ impl<K, V> Drop for IndexMapStore<K, V> {
+     fn drop(&mut self) {
+-        let _ = self.log.flush();
++        if let Some(log) = self.log.as_mut() {
++            let _ = log.flush();
++        }
+     }
+ }
+ 

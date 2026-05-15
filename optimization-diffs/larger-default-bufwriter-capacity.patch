@@ -1,0 +1,19 @@
+commit a4a62730e291f7cfa4d75fed77902e0046e9300e
+Author: shirotech <van@shirotech.com>
+Date:   Thu May 14 19:13:20 2026 +0000
+
+    optimize: larger-default-bufwriter-capacity [KEPT] -8.4% to -9.0% on reopen_10k
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 2d31819..1a8d2cb 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -61,7 +61,7 @@ impl Default for StoreConfig {
+             compact_ratio: 2.0,
+             min_compact_bytes: 1 << 20,
+             sync_on_write: false,
+-            buf_capacity: 64 * 1024,
++            buf_capacity: 256 * 1024,
+         }
+     }
+ }

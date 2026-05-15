@@ -1,0 +1,26 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -87,7 +87,6 @@
+             fs::create_dir_all(parent)?;
+         }
+ 
+-        let mut map: IndexMap<K, V> = IndexMap::new();
+         let mut valid_len: u64 = 0;
+         let mut total_records: u64 = 0;
+ 
+@@ -101,12 +100,11 @@
+             .create(true)
+             .open(&path)?;
+         let total_on_disk = file.metadata()?.len();
++        let capacity_hint = (total_on_disk / 24) as usize;
++        let mut map: IndexMap<K, V> =
++            IndexMap::with_capacity_and_hasher(capacity_hint, Default::default());
+ 
+         if total_on_disk > 0 {
+-            let capacity_hint = (total_on_disk / 24) as usize;
+-            if capacity_hint > 0 {
+-                map.reserve(capacity_hint);
+-            }
+             let mut buf: Vec<u8> = Vec::with_capacity(total_on_disk as usize);
+             file.read_to_end(&mut buf)?;
+ 

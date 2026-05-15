@@ -1,0 +1,104 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -18,6 +18,7 @@
+ //!
+ //! The store owns the file; concurrent writers are not supported.
+ 
++use bincode::config::{Configuration, Fixint, LittleEndian, NoLimit};
+ use indexmap::IndexMap;
+ use serde::{Serialize, de::DeserializeOwned};
+ use std::fs::{self, File, OpenOptions};
+@@ -25,6 +26,12 @@
+ use std::io::{self, BufWriter, ErrorKind, Read, Write};
+ use std::path::{Path, PathBuf};
+ 
++const BINCODE_CONFIG: Configuration<LittleEndian, Fixint, NoLimit> =
++    bincode::config::standard()
++        .with_fixed_int_encoding()
++        .with_little_endian()
++        .with_no_limit();
++
+ const LEN_BYTES: usize = 4;
+ const TAG_INSERT: u8 = 0;
+ const TAG_REMOVE: u8 = 1;
+@@ -124,15 +131,21 @@
+                 let body = &buf[payload_start + 1..payload_end];
+                 match tag {
+                     TAG_INSERT => {
+-                        let (k, v): (K, V) = match bincode::deserialize(body) {
+-                            Ok(r) => r,
++                        let (k, v): (K, V) = match bincode::serde::decode_from_slice(
++                            body,
++                            BINCODE_CONFIG,
++                        ) {
++                            Ok((r, _len)) => r,
+                             Err(_) => break,
+                         };
+                         map.insert(k, v);
+                     }
+                     TAG_REMOVE => {
+-                        let k: K = match bincode::deserialize(body) {
+-                            Ok(r) => r,
++                        let k: K = match bincode::serde::decode_from_slice(
++                            body,
++                            BINCODE_CONFIG,
++                        ) {
++                            Ok((r, _len)) => r,
+                             Err(_) => break,
+                         };
+                         map.shift_remove(&k);
+@@ -227,7 +240,7 @@
+         self.scratch.clear();
+         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+         self.scratch.push(TAG_INSERT);
+-        bincode::serialize_into(&mut self.scratch, &(&k, &v))
++        bincode::serde::encode_into_std_write(&(&k, &v), &mut self.scratch, BINCODE_CONFIG)
+             .map_err(serialize_err)?;
+         self.flush_scratch()?;
+         let prev = self.map.insert(k, v);
+@@ -249,7 +262,7 @@
+         self.scratch.clear();
+         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+         self.scratch.push(TAG_REMOVE);
+-        bincode::serialize_into(&mut self.scratch, k)
++        bincode::serde::encode_into_std_write(k, &mut self.scratch, BINCODE_CONFIG)
+             .map_err(serialize_err)?;
+         self.flush_scratch()?;
+         let prev = self.map.shift_remove(k);
+@@ -279,7 +292,7 @@
+         self.scratch.clear();
+         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
+         self.scratch.push(TAG_INSERT);
+-        bincode::serialize_into(&mut self.scratch, &(k, v_ref))
++        bincode::serde::encode_into_std_write(&(k, v_ref), &mut self.scratch, BINCODE_CONFIG)
+             .map_err(serialize_err)?;
+ 
+         self.flush_scratch()?;
+@@ -311,7 +324,7 @@
+             for (k, v) in &self.map {
+                 buf.clear();
+                 buf.push(TAG_INSERT);
+-                bincode::serialize_into(&mut buf, &(k, v))
++                bincode::serde::encode_into_std_write(&(k, v), &mut buf, BINCODE_CONFIG)
+                     .map_err(serialize_err)?;
+                 writer.write_all(&(buf.len() as u32).to_le_bytes())?;
+                 writer.write_all(&buf)?;
+@@ -371,6 +384,6 @@
+ }
+ 
+ #[inline]
+-fn serialize_err(e: bincode::Error) -> io::Error {
++fn serialize_err(e: bincode::error::EncodeError) -> io::Error {
+     io::Error::new(ErrorKind::InvalidData, e)
+ }
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -8,7 +8,7 @@
+ [dependencies]
+ indexmap = { version = "2", features = ["serde"] }
+ serde = { version = "1", features = ["derive"] }
+-bincode = "1.3"
++bincode = { version = "2.0.1", features = ["serde"] }
+ 
+ [dev-dependencies]
+ tempfile = "3"

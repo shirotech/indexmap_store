@@ -1,0 +1,11 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -333,7 +333,7 @@
+         Ok(())
+     }
+ 
+-    #[inline]
++    #[inline(always)]
+     fn flush_scratch(&mut self) -> io::Result<()> {
+         // Callers reserve LEN_BYTES at the front of `scratch`; fill the length
+         // in place so the length-prefix and payload land in a single write.
