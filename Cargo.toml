@@ -1,5 +1,5 @@
 [package]
-name = "index_map_store"
+name = "indexmap_store"
 version = "0.1.0"
 edition = "2024"
 description = "Mutable, persistent key-value store backed by an IndexMap with an append-only log."

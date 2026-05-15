@@ -30,7 +30,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use index_map_store::IndexMapStore;
+use indexmap_store::IndexMapStore;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -242,10 +242,7 @@ fn main() {
         {
             Some(r) => r,
             None => {
-                eprintln!(
-                    "BENCH_PRINT_ONLY: no {} to read",
-                    results_path().display()
-                );
+                eprintln!("BENCH_PRINT_ONLY: no {} to read", results_path().display());
                 return;
             }
         };
@@ -258,12 +255,7 @@ fn main() {
         benchmarks: BTreeMap::new(),
     };
 
-    let want = |name: &str| -> bool {
-        filter
-            .as_deref()
-            .map(|f| name.contains(f))
-            .unwrap_or(true)
-    };
+    let want = |name: &str| -> bool { filter.as_deref().map(|f| name.contains(f)).unwrap_or(true) };
 
     if want("insert_10k_u64") {
         let (n, s) = run(
@@ -295,8 +287,7 @@ fn main() {
             || tempfile::tempdir().unwrap(),
             |dir| {
                 let path = dir.path().join("store.log");
-                let mut store: IndexMapStore<String, String> =
-                    IndexMapStore::open(&path).unwrap();
+                let mut store: IndexMapStore<String, String> = IndexMapStore::open(&path).unwrap();
                 for i in 0..2_000u32 {
                     let k = format!("key:{:06}", i);
                     let v = format!("value-{}-{:032}", i, i);
@@ -375,8 +366,7 @@ fn main() {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("store.log");
                 {
-                    let mut store: IndexMapStore<u64, u64> =
-                        IndexMapStore::open(&path).unwrap();
+                    let mut store: IndexMapStore<u64, u64> = IndexMapStore::open(&path).unwrap();
                     for i in 0..10_000u64 {
                         store.insert(i, i.wrapping_mul(7)).unwrap();
                     }
@@ -385,8 +375,7 @@ fn main() {
                 OpenState { _dir: dir, path }
             },
             |state| {
-                let store: IndexMapStore<u64, u64> =
-                    IndexMapStore::open(&state.path).unwrap();
+                let store: IndexMapStore<u64, u64> = IndexMapStore::open(&state.path).unwrap();
                 black_box(store.len());
             },
         );

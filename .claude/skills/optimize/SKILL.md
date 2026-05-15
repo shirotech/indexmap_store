@@ -1,10 +1,10 @@
 ---
-description: Attempt ONE optimization hypothesis on the index_map_store crate. Test-gates the change, runs 3 confirming bench rounds against a fixed pre-change baseline, keeps the change if either (a) at least one scenario reliably improves ≤ -1.5% with no scenario regressing ≥ +1.5%, OR (b) all scenarios broadly improve ≤ -0.5% with no scenario drifting > +0.1%. Records the attempt in OPTIMIZATIONS.md regardless of outcome and commits the log so future invocations skip dead ends.
+description: Attempt ONE optimization hypothesis on the indexmap_store crate. Test-gates the change, runs 3 confirming bench rounds against a fixed pre-change baseline, keeps the change if either (a) at least one scenario reliably improves ≤ -1.5% with no scenario regressing ≥ +1.5%, OR (b) all scenarios broadly improve ≤ -0.5% with no scenario drifting > +0.1%. Records the attempt in OPTIMIZATIONS.md regardless of outcome and commits the log so future invocations skip dead ends.
 ---
 
 # /optimize
 
-You are running **ONE** optimization attempt on the `index_map_store` crate, end-to-end, autonomously. Do not bundle multiple ideas; the user runs `/optimize` again for the next hypothesis.
+You are running **ONE** optimization attempt on the `indexmap_store` crate, end-to-end, autonomously. Do not bundle multiple ideas; the user runs `/optimize` again for the next hypothesis.
 
 The whole point of this skill is **reliable iteration**: every attempt — kept or rejected — gets logged so the next invocation cannot accidentally retry it.
 
@@ -34,6 +34,7 @@ Read `OPTIMIZATIONS.md` and extract every hypothesis slug from the Index table. 
 Pick the highest-value untried hypothesis from the list below (or invent one in the same shape). State it as a one-sentence claim with a risk level.
 
 **LOW risk** (proceed without asking):
+
 - pre-size IndexMap with `with_capacity` at open time using the on-disk file size as a hint
 - pre-size the replay `payload` Vec on the largest record observed so far
 - batch length-prefix + payload into a single `write_all` via a single buffer (avoid two BufWriter writes per record)
@@ -43,11 +44,13 @@ Pick the highest-value untried hypothesis from the list below (or invent one in 
 - skip the `path.exists()` probe and rely on `OpenOptions::read` errors
 
 **MEDIUM risk** (proceed but flag clearly in the log):
+
 - swap bincode for a hand-rolled fixed-prefix codec for primitives
 - add a snapshot-file path (separate from WAL) for faster cold reopen
 - coalesce compaction into background after release of the write lock
 
 **HIGH risk** (STOP and ask user before implementing):
+
 - change public API signatures or exported types
 - introduce `unsafe`
 - swap a dependency (bincode → rkyv, indexmap → custom)
@@ -135,12 +138,12 @@ Each printed Δ p50 column compares that run to the pre-change baseline. Capture
 
 Default bench config is `BENCH_SAMPLES=1001`, `BENCH_WARMUP=5` — noise floor is ≈1%. The gates sit just above noise on both sides; tighter than the original ±2/-3% but still tolerant of single-run jitter on the improvement side. Thresholds:
 
-| Verdict | Criterion |
-|---|---|
-| **KEPT (deep-win)** | ≥1 scenario shows Δ p50 ≤ **-1.5%** in **all 3 runs**, AND no scenario shows Δ p50 ≥ **+1.5%** in **any** run |
+| Verdict              | Criterion                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **KEPT (deep-win)**  | ≥1 scenario shows Δ p50 ≤ **-1.5%** in **all 3 runs**, AND no scenario shows Δ p50 ≥ **+1.5%** in **any** run      |
 | **KEPT (broad-win)** | **ALL** scenarios show Δ p50 ≤ **-0.5%** in **all 3 runs**, AND no scenario shows Δ p50 > **+0.1%** in **any** run |
-| **REVERTED** | Any scenario shows Δ p50 ≥ **+1.5%** in any run (and broad-win is not satisfied) |
-| **INCONCLUSIVE** | Neither KEPT path satisfied and no regression past +1.5% |
+| **REVERTED**         | Any scenario shows Δ p50 ≥ **+1.5%** in any run (and broad-win is not satisfied)                                   |
+| **INCONCLUSIVE**     | Neither KEPT path satisfied and no regression past +1.5%                                                           |
 
 Apply in this order:
 

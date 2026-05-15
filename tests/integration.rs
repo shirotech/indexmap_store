@@ -1,4 +1,4 @@
-use index_map_store::{IndexMapStore, StoreConfig};
+use indexmap_store::{IndexMapStore, StoreConfig};
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 
@@ -73,7 +73,11 @@ fn compaction_shrinks_log() {
     }
     s.flush().unwrap();
     let size_after = std::fs::metadata(&path).unwrap().len();
-    assert!(size_after < 200, "expected compaction to shrink log, got {}", size_after);
+    assert!(
+        size_after < 200,
+        "expected compaction to shrink log, got {}",
+        size_after
+    );
 
     let s2: IndexMapStore<u32, u64> = IndexMapStore::open_with(&path, cfg).unwrap();
     assert_eq!(s2.len(), 1);
@@ -187,7 +191,11 @@ fn empty_after_full_delete_compacts() {
     }
     s.flush().unwrap();
     let size = std::fs::metadata(&path).unwrap().len();
-    assert_eq!(size, 0, "fully drained store should compact to 0 bytes, got {}", size);
+    assert_eq!(
+        size, 0,
+        "fully drained store should compact to 0 bytes, got {}",
+        size
+    );
 }
 
 #[test]

@@ -112,9 +112,8 @@ where
 
             let mut offset: usize = 0;
             while offset + LEN_BYTES <= buf.len() {
-                let len = u32::from_le_bytes(
-                    buf[offset..offset + LEN_BYTES].try_into().unwrap(),
-                ) as usize;
+                let len = u32::from_le_bytes(buf[offset..offset + LEN_BYTES].try_into().unwrap())
+                    as usize;
                 let payload_start = offset + LEN_BYTES;
                 let payload_end = payload_start + len;
                 if payload_end > buf.len() || len == 0 {
@@ -215,7 +214,7 @@ where
     /// Borrow the underlying [`IndexMap`] read-only. All mutations must go
     /// through the store API so the log stays in sync.
     #[inline]
-    pub fn as_index_map(&self) -> &IndexMap<K, V> {
+    pub fn as_indexmap(&self) -> &IndexMap<K, V> {
         &self.map
     }
 
@@ -227,8 +226,7 @@ where
         self.scratch.clear();
         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
         self.scratch.push(TAG_INSERT);
-        bincode::serialize_into(&mut self.scratch, &(&k, &v))
-            .map_err(serialize_err)?;
+        bincode::serialize_into(&mut self.scratch, &(&k, &v)).map_err(serialize_err)?;
         self.flush_scratch()?;
         let prev = self.map.insert(k, v);
         if prev.is_none() {
@@ -249,8 +247,7 @@ where
         self.scratch.clear();
         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
         self.scratch.push(TAG_REMOVE);
-        bincode::serialize_into(&mut self.scratch, k)
-            .map_err(serialize_err)?;
+        bincode::serialize_into(&mut self.scratch, k).map_err(serialize_err)?;
         self.flush_scratch()?;
         let prev = self.map.shift_remove(k);
         if prev.is_some() {
@@ -279,8 +276,7 @@ where
         self.scratch.clear();
         self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
         self.scratch.push(TAG_INSERT);
-        bincode::serialize_into(&mut self.scratch, &(k, v_ref))
-            .map_err(serialize_err)?;
+        bincode::serialize_into(&mut self.scratch, &(k, v_ref)).map_err(serialize_err)?;
 
         self.flush_scratch()?;
         self.total_records += 1;
@@ -311,8 +307,7 @@ where
             for (k, v) in &self.map {
                 buf.clear();
                 buf.push(TAG_INSERT);
-                bincode::serialize_into(&mut buf, &(k, v))
-                    .map_err(serialize_err)?;
+                bincode::serialize_into(&mut buf, &(k, v)).map_err(serialize_err)?;
                 writer.write_all(&(buf.len() as u32).to_le_bytes())?;
                 writer.write_all(&buf)?;
             }

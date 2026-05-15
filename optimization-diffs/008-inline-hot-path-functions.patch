@@ -54,7 +54,7 @@
      /// Borrow the underlying [`IndexMap`] read-only. All mutations must go
      /// through the store API so the log stays in sync.
 +    #[inline]
-     pub fn as_index_map(&self) -> &IndexMap<K, V> {
+     pub fn as_indexmap(&self) -> &IndexMap<K, V> {
          &self.map
      }
 @@ -217,6 +226,7 @@
