@@ -1,45 +1,45 @@
 {
-  "timestamp_unix": 1778788636,
+  "timestamp_unix": 1778821623,
   "benchmarks": {
     "insert_10k_u64": {
-      "samples": 1001,
-      "min_ns": 5053217,
-      "p50_ns": 5258858,
-      "p90_ns": 5647361,
-      "max_ns": 10529382,
-      "mean_ns": 5305754
+      "samples": 100,
+      "min_ns": 5019339,
+      "p50_ns": 5274638,
+      "p90_ns": 5627852,
+      "max_ns": 5857593,
+      "mean_ns": 5286848
     },
     "insert_2k_strings": {
-      "samples": 1001,
-      "min_ns": 4878539,
-      "p50_ns": 5486303,
-      "p90_ns": 5875734,
-      "max_ns": 10426380,
-      "mean_ns": 5551565
+      "samples": 100,
+      "min_ns": 5243381,
+      "p50_ns": 5451232,
+      "p90_ns": 5816418,
+      "max_ns": 5972951,
+      "mean_ns": 5472304
     },
     "lookup_100k": {
-      "samples": 1001,
-      "min_ns": 625538,
-      "p50_ns": 630257,
-      "p90_ns": 633343,
-      "max_ns": 692624,
-      "mean_ns": 630829
+      "samples": 100,
+      "min_ns": 624794,
+      "p50_ns": 628341,
+      "p90_ns": 630765,
+      "max_ns": 639612,
+      "mean_ns": 628434
     },
     "modify_10k": {
-      "samples": 1001,
-      "min_ns": 4895057,
-      "p50_ns": 5092248,
-      "p90_ns": 5586696,
-      "max_ns": 9866845,
-      "mean_ns": 5187735
+      "samples": 100,
+      "min_ns": 4882854,
+      "p50_ns": 5078503,
+      "p90_ns": 5427849,
+      "max_ns": 5917989,
+      "mean_ns": 5110483
     },
     "reopen_10k": {
-      "samples": 1001,
-      "min_ns": 117411,
-      "p50_ns": 119154,
-      "p90_ns": 123372,
-      "max_ns": 238409,
-      "mean_ns": 120219
+      "samples": 100,
+      "min_ns": 116679,
+      "p50_ns": 117570,
+      "p90_ns": 119314,
+      "max_ns": 121588,
+      "mean_ns": 117803
     }
   }
 }

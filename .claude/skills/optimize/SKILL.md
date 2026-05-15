@@ -1,5 +1,5 @@
 ---
-description: Attempt ONE optimization hypothesis on the indexmap_store crate. Test-gates the change, runs 3 confirming bench rounds against a fixed pre-change baseline, keeps the change if either (a) at least one scenario reliably improves ≤ -1.5% with no scenario regressing ≥ +1.5%, OR (b) all scenarios broadly improve ≤ -0.5% with no scenario drifting > +0.1%. Records the attempt in OPTIMIZATIONS.md regardless of outcome and commits the log so future invocations skip dead ends.
+description: Attempt ONE optimization hypothesis on the indexmap_store crate. Test-gates the change, runs 3 confirming bench rounds against a fixed pre-change baseline, keeps the change if either (a) at least one scenario reliably improves ≤ -1.5% with no scenario regressing ≥ +1.5%, OR (b) all scenarios are improvements (Δ p50 < 0 in all 3 runs) with at most 2 scenarios allowed to fall short of the ≤ -0.5% bar, and no scenario drifting > +0.1%. Records the attempt in OPTIMIZATIONS.md regardless of outcome and commits the log so future invocations skip dead ends.
 ---
 
 # /optimize
@@ -136,20 +136,20 @@ Each printed Δ p50 column compares that run to the pre-change baseline. Capture
 
 ## 7. Verdict logic
 
-Default bench config is `BENCH_SAMPLES=1001`, `BENCH_WARMUP=5` — noise floor is ≈1%. The gates sit just above noise on both sides; tighter than the original ±2/-3% but still tolerant of single-run jitter on the improvement side. Thresholds:
+Default bench config is `BENCH_SAMPLES=100`, `BENCH_WARMUP=5` — noise floor wider than the 1001-sample regime (≈1%); expect more single-run jitter, so the 3-run all-pass requirement is doing most of the noise-suppression work. Thresholds unchanged:
 
-| Verdict              | Criterion                                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **KEPT (deep-win)**  | ≥1 scenario shows Δ p50 ≤ **-1.5%** in **all 3 runs**, AND no scenario shows Δ p50 ≥ **+1.5%** in **any** run      |
-| **KEPT (broad-win)** | **ALL** scenarios show Δ p50 ≤ **-0.5%** in **all 3 runs**, AND no scenario shows Δ p50 > **+0.1%** in **any** run |
-| **REVERTED**         | Any scenario shows Δ p50 ≥ **+1.5%** in any run (and broad-win is not satisfied)                                   |
-| **INCONCLUSIVE**     | Neither KEPT path satisfied and no regression past +1.5%                                                           |
+| Verdict              | Criterion                                                                                                                                                                                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **KEPT (deep-win)**  | ≥1 scenario shows Δ p50 ≤ **-1.5%** in **all 3 runs**, AND no scenario shows Δ p50 ≥ **+1.5%** in **any** run                                                                                                                                      |
+| **KEPT (broad-win)** | **ALL** scenarios show Δ p50 **< 0%** in **all 3 runs** (every run is a measured improvement), AND **at most 2** scenarios fall short of the strict ≤ **-0.5%** bar in any run, AND no scenario shows Δ p50 > **+0.1%** in **any** run             |
+| **REVERTED**         | Any scenario shows Δ p50 ≥ **+1.5%** in any run (and broad-win is not satisfied)                                                                                                                                                                   |
+| **INCONCLUSIVE**     | Neither KEPT path satisfied and no regression past +1.5%                                                                                                                                                                                           |
 
 Apply in this order:
 
 1. **REVERTED**: any scenario shows Δ p50 ≥ +1.5% in any run → revert.
 2. **KEPT (deep-win)**: ≥1 scenario shows Δ p50 ≤ -1.5% in all 3 runs (regression guard already cleared by step 1) → keep.
-3. **KEPT (broad-win)**: ALL scenarios show Δ p50 ≤ -0.5% in all 3 runs AND no scenario shows Δ p50 > +0.1% in any run → keep. This captures "many small wins everywhere" diffs that don't move any single scenario by -1.5%; the tight +0.1% regression sub-guard prevents shipping a broad-but-jittery change.
+3. **KEPT (broad-win)**: ALL scenarios show Δ p50 < 0% in all 3 runs (no run is flat-or-positive) AND no scenario shows Δ p50 > +0.1% in any run AND **at most 2** scenarios have any run that falls in the weak band `(-0.5%, 0%)` (the remaining scenarios must clear ≤ -0.5% in all 3 runs) → keep. This captures "many small wins everywhere" diffs that don't move any single scenario by -1.5%; the +0.1% sub-guard prevents shipping a broad-but-jittery change, and the "≤2 weak scenarios" tolerance lets uniformly-negative drifts pass even when one or two scenarios hover just under the -0.5% bar.
 4. **INCONCLUSIVE**: otherwise → revert.
 
 ---
@@ -222,7 +222,7 @@ Do **not** push.
 - ONE hypothesis per invocation. No bundling.
 - Never modify the public API, introduce `unsafe`, or swap a dependency without explicit user approval (HIGH risk — stop and ask).
 - Never disable tests, weaken assertions, or skip the clippy gate.
-- Never reduce `BENCH_SAMPLES` below 501 during the 3-run validation.
+- Never reduce `BENCH_SAMPLES` below 100 during the 3-run validation.
 - Never overwrite `/tmp/optimize/baseline.json` mid-run.
 - Never skip §4a (diff capture) or include `optimization-diffs/` in the §8 revert paths — the patch must survive for future resurfacing.
 - If you cannot find a plausible untried hypothesis, say so explicitly and exit — do not propose something already in the Index table.

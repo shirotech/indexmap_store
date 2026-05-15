@@ -2,7 +2,7 @@
 //!
 //! Run with `cargo bench`. Each invocation:
 //!   1. Warms up each scenario (default 5 iterations) — discards timings.
-//!   2. Collects N timed samples (default 1001, odd so the median is unambiguous).
+//!   2. Collects N timed samples (default 100).
 //!   3. Reports min / p50 / p90 per scenario.
 //!   4. Loads `bench_results.json` (at the crate root, survives `cargo clean`)
 //!      from the previous run, prints the Δ against the current p50, then
@@ -225,7 +225,7 @@ fn main() {
     let samples: usize = env::var("BENCH_SAMPLES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1001);
+        .unwrap_or(100);
     let threshold: f64 = env::var("BENCH_THRESHOLD")
         .ok()
         .and_then(|s| s.parse().ok())

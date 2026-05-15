@@ -2,7 +2,7 @@ diff --git a/Cargo.toml b/Cargo.toml
 index 647f0e8..d7dd852 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,7 +21,15 @@ harness = false
+@@ -21,7 +21,14 @@ harness = false
  [profile.release]
  lto = "thin"
  codegen-units = 1
@@ -16,5 +16,4 @@ index 647f0e8..d7dd852 100644
  codegen-units = 1
 +opt-level = 3
 +debug = false
-+panic = "abort"
 +strip = true
