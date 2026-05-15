@@ -1,5 +1,5 @@
 ---
-description: Attempt ONE optimization hypothesis on the indexmap_store crate. Test-gates the change, runs 3 confirming bench rounds against a fixed pre-change baseline, keeps the change if either (a) at least one scenario reliably improves ≤ -1.5% with no scenario regressing ≥ +1.5%, OR (b) all scenarios are improvements (Δ p50 < 0 in all 3 runs) with at most 2 scenarios allowed to fall short of the ≤ -0.5% bar, and no scenario drifting > +0.1%. Records the attempt in OPTIMIZATIONS.md regardless of outcome and commits the log so future invocations skip dead ends.
+description: Attempt ONE optimization hypothesis on the indexmap_store crate. Test-gates the change, runs 3 confirming bench rounds against a fixed pre-change baseline, keeps the change if either (a) at least one scenario reliably improves ≤ -1.5% with no scenario regressing ≥ +1.5%, OR (b) all scenarios are improvements (Δ trim_mean < 0 in all 3 runs) with at most 2 scenarios allowed to fall short of the ≤ -0.5% bar, and no scenario drifting > +0.1%. Records the attempt in OPTIMIZATIONS.md regardless of outcome and commits the log so future invocations skip dead ends.
 ---
 
 # /optimize
@@ -58,15 +58,16 @@ Pick the highest-value untried hypothesis from the list below (or invent one in 
 
 ---
 
-## 3. Snapshot the pre-change state
+## 3. Snapshot the pre-change SHA
 
 ```bash
 mkdir -p /tmp/optimize
 git rev-parse HEAD > /tmp/optimize/baseline-sha
-cp bench_results.json /tmp/optimize/baseline.json
 ```
 
-The baseline file is what every bench run compares against — do **not** let it be overwritten.
+The pre-change `bench_results.json` IS the baseline; `--verify` reads it
+without overwriting, so no file backup is needed. Only the SHA is recorded
+here so §8 can do a clean revert.
 
 ---
 
@@ -115,43 +116,58 @@ If **either** fails: revert (see §8), record verdict `REVERTED` with reason `"t
 
 ---
 
-## 6. Bench gate — 3 confirming runs
+## 6. Bench gate — 3 confirming runs (single command)
 
-Use the **same** pre-change baseline for each comparison. The bench harness reads `BENCH_BASELINE` if set and uses that as the "previous" reference; it still writes the current run to `bench_results.json`.
-
-Run three independent rounds:
+The bench harness has built-in verify mode: it runs the full pipeline N times against the current `bench_results.json` baseline and emits all per-scenario deltas in one structured file. Do **not** capture per-run snapshots to /tmp anymore.
 
 ```bash
-BENCH_BASELINE=/tmp/optimize/baseline.json cargo bench
-cp bench_results.json /tmp/optimize/run1.json
-
-BENCH_BASELINE=/tmp/optimize/baseline.json cargo bench
-cp bench_results.json /tmp/optimize/run2.json
-
-BENCH_BASELINE=/tmp/optimize/baseline.json cargo bench
-cp bench_results.json /tmp/optimize/run3.json
+cargo bench --bench store_bench -- --verify 3
 ```
 
-Each printed Δ p50 column compares that run to the pre-change baseline. Capture all three values per scenario.
+This produces:
+
+* `verify_results.json` at the crate root — the canonical source of truth for this verification. Parseable JSON with this shape:
+
+  ```json
+  {
+    "schema_version": 2,
+    "baseline_timestamp_unix": 1778869482,
+    "scenarios": {
+      "insert_10k_u64": {
+        "baseline_trim_mean_ns": 206492,
+        "runs_trim_mean_ns": [205144, 205988, 205861],
+        "deltas_pct": [-0.65, -0.24, -0.31]
+      },
+      ...
+    }
+  }
+  ```
+
+* A `VERIFY-JSON: { ... }` single line on stdout carrying the same payload (for one-shot `grep`-and-parse).
+* A human-readable table on stdout with one column per run and signed Δ%.
+
+The baseline is `bench_results.json` (pre-change) by default; override with `BENCH_BASELINE=<path>` if you want to compare against a saved snapshot instead. Verify mode does **NOT** touch `bench_results.json`, so the baseline stays intact across the verification cycle — no /tmp backup needed.
+
+Read `verify_results.json` and pull `deltas_pct` per scenario; those three values per scenario feed §7 directly.
 
 ---
 
 ## 7. Verdict logic
 
-Default bench config is `BENCH_SAMPLES=100`, `BENCH_WARMUP=5` — noise floor wider than the 1001-sample regime (≈1%); expect more single-run jitter, so the 3-run all-pass requirement is doing most of the noise-suppression work. Thresholds unchanged:
+Default bench config is `BENCH_INVOKES=3`, `BENCH_ROUNDS=20`, `BENCH_PER_ROUND=10`, `BENCH_WARMUP_ROUNDS=3`. The headline anchor is `trimmed_mean_ns` (20% trim over the pooled N×R round medians) — chosen over `p50_ns`/`min_ns` because it's robust to both per-sample outliers AND to the ~5% inter-invocation regime bimodality observed on shared AMD Zen hardware. Inter-run noise floor on this anchor is ~0.2-0.5% on most scenarios; lookup-heavy scenarios can still swing ~1-2% when the per-invocation fast/slow regime split flips between runs. Thresholds unchanged:
 
 | Verdict              | Criterion                                                                                                                                                                                                                                          |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **KEPT (deep-win)**  | ≥1 scenario shows Δ p50 ≤ **-1.5%** in **all 3 runs**, AND no scenario shows Δ p50 ≥ **+1.5%** in **any** run                                                                                                                                      |
-| **KEPT (broad-win)** | **ALL** scenarios show Δ p50 **< 0%** in **all 3 runs** (every run is a measured improvement), AND **at most 2** scenarios fall short of the strict ≤ **-0.5%** bar in any run, AND no scenario shows Δ p50 > **+0.1%** in **any** run             |
-| **REVERTED**         | Any scenario shows Δ p50 ≥ **+1.5%** in any run (and broad-win is not satisfied)                                                                                                                                                                   |
+| **KEPT (deep-win)**  | ≥1 scenario shows Δ trim_mean ≤ **-1.5%** in **all 3 runs**, AND no scenario shows Δ trim_mean ≥ **+1.5%** in **any** run                                                                                                                                      |
+| **KEPT (broad-win)** | **ALL** scenarios show Δ trim_mean **< 0%** in **all 3 runs** (every run is a measured improvement), AND **at most 2** scenarios fall short of the strict ≤ **-0.5%** bar in any run, AND no scenario shows Δ trim_mean > **+0.1%** in **any** run             |
+| **REVERTED**         | Any scenario shows Δ trim_mean ≥ **+1.5%** in any run (and broad-win is not satisfied)                                                                                                                                                                   |
 | **INCONCLUSIVE**     | Neither KEPT path satisfied and no regression past +1.5%                                                                                                                                                                                           |
 
 Apply in this order:
 
-1. **REVERTED**: any scenario shows Δ p50 ≥ +1.5% in any run → revert.
-2. **KEPT (deep-win)**: ≥1 scenario shows Δ p50 ≤ -1.5% in all 3 runs (regression guard already cleared by step 1) → keep.
-3. **KEPT (broad-win)**: ALL scenarios show Δ p50 < 0% in all 3 runs (no run is flat-or-positive) AND no scenario shows Δ p50 > +0.1% in any run AND **at most 2** scenarios have any run that falls in the weak band `(-0.5%, 0%)` (the remaining scenarios must clear ≤ -0.5% in all 3 runs) → keep. This captures "many small wins everywhere" diffs that don't move any single scenario by -1.5%; the +0.1% sub-guard prevents shipping a broad-but-jittery change, and the "≤2 weak scenarios" tolerance lets uniformly-negative drifts pass even when one or two scenarios hover just under the -0.5% bar.
+1. **REVERTED**: any scenario shows Δ trim_mean ≥ +1.5% in any run → revert.
+2. **KEPT (deep-win)**: ≥1 scenario shows Δ trim_mean ≤ -1.5% in all 3 runs (regression guard already cleared by step 1) → keep.
+3. **KEPT (broad-win)**: ALL scenarios show Δ trim_mean < 0% in all 3 runs (no run is flat-or-positive) AND no scenario shows Δ trim_mean > +0.1% in any run AND **at most 2** scenarios have any run that falls in the weak band `(-0.5%, 0%)` (the remaining scenarios must clear ≤ -0.5% in all 3 runs) → keep. This captures "many small wins everywhere" diffs that don't move any single scenario by -1.5%; the +0.1% sub-guard prevents shipping a broad-but-jittery change, and the "≤2 weak scenarios" tolerance lets uniformly-negative drifts pass even when one or two scenarios hover just under the -0.5% bar.
 4. **INCONCLUSIVE**: otherwise → revert.
 
 ---
@@ -165,13 +181,15 @@ git clean -fd src/ tests/ benches/
 
 `optimization-diffs/` is deliberately NOT in the revert paths — the saved `<slug>.patch` from §4a survives so the attempt can be resurfaced.
 
-Restore the pre-change baseline so it stays the canonical reference:
+`bench_results.json` is untouched by `--verify`, so it already holds the pre-change baseline — no restore step needed.
+
+For KEPT verdicts: do **not** revert. Refresh the baseline so subsequent /optimize invocations measure against the post-change numbers:
 
 ```bash
-cp /tmp/optimize/baseline.json bench_results.json
+cargo bench --bench store_bench
 ```
 
-For KEPT verdicts: do **not** revert. The post-change `bench_results.json` from run 3 becomes the new baseline — keep it.
+That single (non-verify) run regenerates `bench_results.json` from the kept code.
 
 ---
 
@@ -191,8 +209,8 @@ Two updates:
 - Risk tag
 - Files touched
 - **Diff:** `[optimization-diffs/<NNN>-<slug>.patch](optimization-diffs/<NNN>-<slug>.patch)` — reference only. Must be present even when REVERTED/INCONCLUSIVE so a future retry can read the intent and re-implement against the current codebase. Do **not** `git apply` it on retry; the surrounding code will have drifted.
-- Baseline p50 for every scenario
-- Three Δ p50 values per scenario, comma-separated, with the verdict reasoning visible at a glance
+- Baseline trim_mean for every scenario
+- Three Δ trim_mean values per scenario, comma-separated, with the verdict reasoning visible at a glance
 - Verdict + why
 - Follow-ups / dead ends (anything closed off, anything worth a separate next attempt)
 
@@ -224,7 +242,7 @@ Do **not** push.
 - ONE hypothesis per invocation. No bundling.
 - Never modify the public API, introduce `unsafe`, or swap a dependency without explicit user approval (HIGH risk — stop and ask).
 - Never disable tests, weaken assertions, or skip the clippy gate.
-- Never reduce `BENCH_SAMPLES` below 100 during the 3-run validation.
-- Never overwrite `/tmp/optimize/baseline.json` mid-run.
+- Never reduce `BENCH_INVOKES` below 3 or `BENCH_ROUNDS × BENCH_PER_ROUND` below 200 during the 3-run validation.
+- Never overwrite `bench_results.json` mid-cycle. `--verify` reads it as the baseline and must see the pre-change values; refresh it only after a KEPT verdict via a non-verify `cargo bench` run.
 - Never skip §4a (diff capture) or include `optimization-diffs/` in the §8 revert paths — the patch must survive for future resurfacing.
 - If you cannot find a plausible untried hypothesis, say so explicitly and exit — do not propose something already in the Index table.
