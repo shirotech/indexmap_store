@@ -1,0 +1,47 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index ec15d76..d859da7 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -160,7 +160,11 @@ where
+             live_records,
+             total_records,
+             cfg,
+-            scratch: Vec::with_capacity(256),
++            scratch: {
++                let mut s = Vec::with_capacity(256);
++                s.extend_from_slice(&[0u8; LEN_BYTES]);
++                s
++            },
+         })
+     }
+ 
+@@ -224,8 +228,7 @@ where
+     /// [`IndexMap::insert`] semantics).
+     #[inline]
+     pub fn insert(&mut self, k: K, v: V) -> io::Result<Option<V>> {
+-        self.scratch.clear();
+-        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
++        self.scratch.truncate(LEN_BYTES);
+         self.scratch.push(TAG_INSERT);
+         bincode::serialize_into(&mut self.scratch, &(&k, &v)).map_err(serialize_err)?;
+         self.flush_scratch()?;
+@@ -245,8 +248,7 @@ where
+         if !self.map.contains_key(k) {
+             return Ok(None);
+         }
+-        self.scratch.clear();
+-        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
++        self.scratch.truncate(LEN_BYTES);
+         self.scratch.push(TAG_REMOVE);
+         bincode::serialize_into(&mut self.scratch, k).map_err(serialize_err)?;
+         self.flush_scratch()?;
+@@ -274,8 +276,7 @@ where
+         let result = f(v_mut);
+         let v_ref: &V = v_mut;
+ 
+-        self.scratch.clear();
+-        self.scratch.extend_from_slice(&[0u8; LEN_BYTES]);
++        self.scratch.truncate(LEN_BYTES);
+         self.scratch.push(TAG_INSERT);
+         bincode::serialize_into(&mut self.scratch, &(k, v_ref)).map_err(serialize_err)?;
+ 
