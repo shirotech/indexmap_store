@@ -80,6 +80,8 @@ Minimal diff, one hypothesis, no drive-by refactors or comment cleanups. If the 
 
 Save the implemented change as a patch file under `optimization-diffs/<NNN>-<slug>.patch` at the crate root, **before** running tests or benches. The patch must survive the §8 revert so the attempt can be resurfaced later (bulks, retries, partial-stack experiments). The revert in §8 explicitly leaves this directory untouched.
 
+**The saved patch is a REFERENCE artifact, not a replay script.** Do not `git apply` it on retry — the codebase will have drifted (line numbers, surrounding code, dependency versions, even renamed symbols) and a clean apply is neither expected nor desired. When resurfacing an attempt, read the patch to understand the *intent and shape* of the change, then re-implement it against the current code. Treat it like a design sketch, not a binary.
+
 `<NNN>` is a zero-padded 3-digit index in the order attempts were tried. Compute it as `max(existing) + 1`:
 
 ```bash
@@ -188,7 +190,7 @@ Two updates:
 - Hypothesis (one sentence)
 - Risk tag
 - Files touched
-- **Diff:** `[optimization-diffs/<NNN>-<slug>.patch](optimization-diffs/<NNN>-<slug>.patch)` — must be present even when REVERTED/INCONCLUSIVE so the change can be replayed in a future bulk/retry
+- **Diff:** `[optimization-diffs/<NNN>-<slug>.patch](optimization-diffs/<NNN>-<slug>.patch)` — reference only. Must be present even when REVERTED/INCONCLUSIVE so a future retry can read the intent and re-implement against the current codebase. Do **not** `git apply` it on retry; the surrounding code will have drifted.
 - Baseline p50 for every scenario
 - Three Δ p50 values per scenario, comma-separated, with the verdict reasoning visible at a glance
 - Verdict + why
