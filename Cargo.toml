@@ -1,14 +1,12 @@
 [package]
 name = "indexmap_store"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Mutable, persistent key-value store backed by an IndexMap with an append-only log."
 license = "MIT OR Apache-2.0"
-exclude = [
-    "OPTIMIZATIONS.md",
-    "optimization-diffs/",
-    "bench_results.json",
-    ".claude/",
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
 ]
 
 [dependencies]
