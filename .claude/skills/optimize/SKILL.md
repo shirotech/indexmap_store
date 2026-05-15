@@ -75,14 +75,23 @@ Minimal diff, one hypothesis, no drive-by refactors or comment cleanups. If the 
 
 ## 4a. Capture the diff (mandatory, before any gate runs)
 
-Save the implemented change as a patch file under `optimization-diffs/<slug>.patch` at the crate root, **before** running tests or benches. The patch must survive the §8 revert so the attempt can be resurfaced later (bulks, retries, partial-stack experiments). The revert in §8 explicitly leaves this directory untouched.
+Save the implemented change as a patch file under `optimization-diffs/<NNN>-<slug>.patch` at the crate root, **before** running tests or benches. The patch must survive the §8 revert so the attempt can be resurfaced later (bulks, retries, partial-stack experiments). The revert in §8 explicitly leaves this directory untouched.
+
+`<NNN>` is a zero-padded 3-digit index in the order attempts were tried. Compute it as `max(existing) + 1`:
 
 ```bash
 mkdir -p optimization-diffs
-git diff -- src/ tests/ benches/ Cargo.toml Cargo.lock > optimization-diffs/<slug>.patch
+# Next index = highest existing NNN + 1 (001 if empty)
+NEXT=$(ls optimization-diffs/ 2>/dev/null | grep -oE '^[0-9]{3}' | sort -n | tail -1)
+NEXT=$(printf '%03d' $(( ${NEXT:-0} + 1 )))
+PATCH="optimization-diffs/${NEXT}-<slug>.patch"
+git diff -- src/ tests/ benches/ Cargo.toml Cargo.lock > "$PATCH"
 # Sanity: must be non-empty (a no-op attempt is a bug)
-test -s optimization-diffs/<slug>.patch || { echo "empty diff — abort"; exit 1; }
+test -s "$PATCH" || { echo "empty diff — abort"; exit 1; }
+echo "saved $PATCH"
 ```
+
+Use `$PATCH` (or the literal `optimization-diffs/<NNN>-<slug>.patch` path) in §9 (markdown links) and §10 (`git add`).
 
 If the change adds a brand-new source file, `git add -N <new-file>` first so `git diff` includes it (the `-- src/ tests/ benches/` pathspec already covers the directories).
 
@@ -168,7 +177,7 @@ Two updates:
 **(a) Index table — add one row at the top of the table body** (most-recent-first). The Diff column links to the patch saved in §4a:
 
 ```
-| 2026-05-14 | preallocate-replay-payload | src/lib.rs | LOW | KEPT | -4.1% on reopen_10k, others noise | [diff](optimization-diffs/preallocate-replay-payload.patch) |
+| 2026-05-14 | preallocate-replay-payload | src/lib.rs | LOW | KEPT | -4.1% on reopen_10k, others noise | [diff](optimization-diffs/026-preallocate-replay-payload.patch) |
 ```
 
 **(b) Detailed entry — append below the Index table** using the template comment in OPTIMIZATIONS.md. Include:
@@ -176,7 +185,7 @@ Two updates:
 - Hypothesis (one sentence)
 - Risk tag
 - Files touched
-- **Diff:** `[optimization-diffs/<slug>.patch](optimization-diffs/<slug>.patch)` — must be present even when REVERTED/INCONCLUSIVE so the change can be replayed in a future bulk/retry
+- **Diff:** `[optimization-diffs/<NNN>-<slug>.patch](optimization-diffs/<NNN>-<slug>.patch)` — must be present even when REVERTED/INCONCLUSIVE so the change can be replayed in a future bulk/retry
 - Baseline p50 for every scenario
 - Three Δ p50 values per scenario, comma-separated, with the verdict reasoning visible at a glance
 - Verdict + why
@@ -187,7 +196,7 @@ Two updates:
 ## 10. Commit
 
 ```bash
-git add OPTIMIZATIONS.md bench_results.json optimization-diffs/<slug>.patch
+git add OPTIMIZATIONS.md bench_results.json optimization-diffs/<NNN>-<slug>.patch
 # If KEPT, also stage source changes:
 git add src/ tests/ benches/ Cargo.toml Cargo.lock
 git commit -m "optimize: <slug> [<VERDICT>]"

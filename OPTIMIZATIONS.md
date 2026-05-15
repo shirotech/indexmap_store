@@ -11,37 +11,37 @@ already attempted (regardless of verdict).
 - `REVERTED` — change broke tests/clippy, or bench gate failed; code restored.
 - `INCONCLUSIVE` — change neither improved nor regressed beyond noise; reverted, treat as a closed dead-end so we don't retry it.
 
-**Diff column** — each row links to `optimization-diffs/<slug>.patch`, the saved source diff for that attempt. For KEPT verdicts the patch is exactly the change that landed in the codebase. For REVERTED/INCONCLUSIVE the patch lets future invocations replay the attempt (e.g. as part of a bulk stack or retry). Entries pre-dating the diff-capture step in `/optimize` were back-filled: KEPT diffs were extracted from their commits; REVERTED/INCONCLUSIVE diffs were re-implemented from each entry's detailed description and the parent-commit source state, then emitted as a unified diff against that parent — so the patches reflect the change but are not byte-identical to the original (untracked) revert.
+**Diff column** — each row links to `optimization-diffs/<NNN>-<slug>.patch`, the saved source diff for that attempt. `<NNN>` is a 3-digit zero-padded index reflecting the order attempts were tried (001 is the first). For KEPT verdicts the patch is exactly the change that landed in the codebase. For REVERTED/INCONCLUSIVE the patch lets future invocations replay the attempt (e.g. as part of a bulk stack or retry). Entries pre-dating the diff-capture step in `/optimize` were back-filled: KEPT diffs were extracted from their commits; REVERTED/INCONCLUSIVE diffs were re-implemented from each entry's detailed description and the parent-commit source state, then emitted as a unified diff against that parent — so the patches reflect the change but are not byte-identical to the original (untracked) revert.
 
 ## Index
 
 | Date (UTC) | Hypothesis | Files touched | Risk | Verdict | Notes | Diff |
 |---|---|---|---|---|---|---|
-| 2026-05-14 | bundle-inconclusive-round-2 | src/lib.rs, Cargo.toml | HIGH | INCONCLUSIVE | Stacked the 5 still-applicable INCONCLUSIVE attempts that landed *after* `bundle-inconclusive-attempts` (round 1): (1) bincode-2-upgrade-new-config (HIGH: dep 1.3→2.0.1, new typed Configuration, fixed-int), (2) compact-batch-len-prefix-and-payload (compact loop pre-seeds buf with LEN_BYTES + single write_all per record), (3) truncate-scratch-preserve-len-prefix (constructor pre-seeds scratch with [0;LEN_BYTES]; insert/remove/modify use `truncate(LEN_BYTES) + push(tag)`), (4) inline-always-flush-scratch (`#[inline]` → `#[inline(always)]`), (5) bufwriter-capacity-2mb (default 1MB → 2MB). Excluded `combine-len-prefix-and-tag-extend` as subsumed by (3). Result: no scenario regressed past +1.5% (max +0.47% on reopen_10k), but neither KEPT path clears: deep-win fails (only insert_10k_u64 hit -1.41% once, then -0.56% / -0.24%); broad-win fails because reopen_10k went *positive* in 2 of 3 runs (+0.43% / -0.44% / +0.47%) — opposite of round-1's reopen -1.56% to -2.02%; the layout interactions of round-2's 5 changes don't compose like round-1's did. INCONCLUSIVE — reverted | [diff](optimization-diffs/bundle-inconclusive-round-2.patch) |
-| 2026-05-14 | bincode-2-upgrade-new-config | src/lib.rs, Cargo.toml | HIGH | INCONCLUSIVE | Upgraded bincode 1.3 → 2.0.1 using the new typed `Configuration<LittleEndian, Fixint, NoLimit>` API (built via `bincode::config::standard().with_fixed_int_encoding().with_little_endian().with_no_limit()` — NOT `legacy()`; fixed-int chosen to preserve byte-compat with bincode 1.x defaults and avoid the known +65% varint reopen regression) and migrated all 4 `serialize_into` callsites to `bincode::serde::encode_into_std_write(...)` and both `deserialize` callsites to `bincode::serde::decode_from_slice(...)` — initial 3-run gate tripped REVERTED on lookup_100k +1.51% in run 3, but a follow-up 3 runs (4/5/6) showed lookup_100k in [-0.09%, +0.31%], confirming the +1.51% was an isolated noise spike; reclassified REVERTED → INCONCLUSIVE; even discounting the spike, neither KEPT gate is satisfied: no scenario clears -1.5% reliably (best is insert_10k_u64 -1.03% / -1.35% on 2 of 6) and broad-win fails because modify_10k drifts both ways (-0.39% to +0.22%) and run-5 reopen_10k spiked +1.02%; user-authorized HIGH-risk dependency swap; ~-0.5% directional improvement on codec-touching scenarios is real but below the noise floor | [diff](optimization-diffs/bincode-2-upgrade-new-config.patch) |
-| 2026-05-14 | construct-IndexMap-with-capacity-direct | src/lib.rs | LOW | REVERTED | Replaced `IndexMap::new() + map.reserve(capacity_hint)` with single-step `IndexMap::with_capacity_and_hasher(capacity_hint, Default::default())` — reopen_10k regressed +3.56% / +3.66% / +4.10% across all 3 runs (~5us on 119us baseline); the unconditional `with_capacity_and_hasher(0, ...)` for empty-file opens added allocation work the prior `IndexMap::new()` skipped, AND the moved-out `let capacity_hint` line shifted symbol layout; the original two-step pattern (`new()` always + conditional `reserve()`) was locally optimal | [diff](optimization-diffs/construct-IndexMap-with-capacity-direct.patch) |
-| 2026-05-14 | compact-batch-len-prefix-and-payload | src/lib.rs | LOW | INCONCLUSIVE | Applied the KEPT `batch-len-prefix-and-payload` pattern (one `write_all` per record by filling length prefix in scratch) to `compact()`'s rewrite loop — all scenarios within ±0.75% noise (reopen_10k -0.74% / -0.22% / -0.52%, insert_2k_strings +0.68% / +0.41% / +0.15%); bench doesn't exercise compact so this was expected to be flat; reverted | [diff](optimization-diffs/compact-batch-len-prefix-and-payload.patch) |
-| 2026-05-14 | uninline-mutation-entry-points | src/lib.rs | LOW | REVERTED | Removed the `#[inline]` annotation from `insert`/`remove`/`modify` to test whether ThinLTO's heuristic would *not* inline them and leave the bodies in lib.rs's text segment (motivated by `inline-always-insert-remove-modify`'s +9% reopen regression from over-inlining) — reopen_10k still regressed +6.14% / +6.05% / +5.65% across all 3 runs; both directions of the inline knob hurt reopen, confirming the existing `#[inline]` (heuristic-friendly) is locally optimal; write paths flat | [diff](optimization-diffs/uninline-mutation-entry-points.patch) |
-| 2026-05-14 | inline-always-insert-remove-modify | src/lib.rs | LOW | REVERTED | Promoted `#[inline]` → `#[inline(always)]` on the three public mutation entry points — reopen_10k regressed +9.33% / +9.39% / +9.23% across all 3 runs (~11us on a 119us baseline) despite reopen calling none of those functions; the larger inlined bodies in the bench harness's u64-monomorphisation shifted symbol layout enough to push something off the read path's icache; clear example of how `#[inline(always)]` on hot public APIs can hurt unrelated cold-ish paths through codegen-layout side effects | [diff](optimization-diffs/inline-always-insert-remove-modify.patch) |
-| 2026-05-14 | truncate-scratch-preserve-len-prefix | src/lib.rs | LOW | INCONCLUSIVE | Replaced `clear + extend(&[0;4]) + push(tag)` with `truncate(LEN_BYTES) + push(tag)` after pre-seeding scratch with 4 zero bytes at construction — reopen_10k drifts consistently -1.62% / -1.14% / -0.86% (only run 1 clears -1.5%; gate requires all 3) and insert_2k_strings -0.49% / -0.19% / -0.31% (directional, well under gate); reverted | [diff](optimization-diffs/truncate-scratch-preserve-len-prefix.patch) |
-| 2026-05-14 | combine-len-prefix-and-tag-extend | src/lib.rs | LOW | INCONCLUSIVE | Fused `extend_from_slice(&[0;4])` + `push(tag)` into one `extend_from_slice(&[0,0,0,0,tag])` across insert/remove/modify — all scenarios within ±1.2% noise; modify_10k -0.71%/+0.01%/+0.16%, reopen_10k -0.59%/-1.20%/-0.24% (directional but neither clears -1.5% gate); reverted | [diff](optimization-diffs/combine-len-prefix-and-tag-extend.patch) |
-| 2026-05-14 | inline-always-flush-scratch | src/lib.rs | LOW | INCONCLUSIVE | Promoted `#[inline]` → `#[inline(always)]` on `flush_scratch` (targeted follow-up from inline-hot-path-functions) — all scenarios within ±1% noise; reopen_10k drifts -0.21% / -0.65% / -0.70% (directional but under -1.5% gate); ThinLTO already inlined flush_scratch as expected, the `always` only forces what was already happening | [diff](optimization-diffs/inline-always-flush-scratch.patch) |
-| 2026-05-14 | lazy-bufwriter-allocation | src/lib.rs | LOW | REVERTED | Deferred the 1MB BufWriter mmap until first mutation via `log: Option<BufWriter>` + `file: Option<File>` — reopen_10k regressed +0.95% / +1.56% / +2.89% (run 1 over +1.5% guard); the extra struct field + per-write `is_none()` branch + Drop-time discrimination outweighed the saved mmap, and the struct grew enough that codegen layout shifted unfavorably on the read path | [diff](optimization-diffs/lazy-bufwriter-allocation.patch) |
-| 2026-05-14 | bufwriter-capacity-2mb | src/lib.rs | LOW | INCONCLUSIVE | Bumped default `buf_capacity` from 1MB to 2MB — all scenarios within ±1% noise (reopen_10k -0.68% / +0.61% / -0.61%); 1MB already past the mmap-threshold ceiling, diminishing returns confirmed; reverted | [diff](optimization-diffs/bufwriter-capacity-2mb.patch) |
-| 2026-05-14 | mmap-slurp-buffer-min-1mb | src/lib.rs | LOW | REVERTED | `Vec::with_capacity(total_on_disk).max(1MB)` regressed reopen_10k +4.86% to +5.04% across all 3 runs — the larger mmap region the kernel has to track (1MB) costs more on every reopen than the 240KB slurp it replaced, while only the first 240KB ever gets touched | [diff](optimization-diffs/mmap-slurp-buffer-min-1mb.patch) |
-| 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT (deep-win) | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed | [diff](optimization-diffs/bundle-inconclusive-attempts.patch) |
-| 2026-05-14 | mark-compact-as-cold | src/lib.rs | LOW | REVERTED | `#[cold]` on `compact()` regressed reopen_10k +3.6% to +4.0% across all 3 runs — binary-layout side effect hurt icache locality on the read path | [diff](optimization-diffs/mark-compact-as-cold.patch) |
-| 2026-05-14 | inline-enum-tag-u8 | src/lib.rs | MEDIUM | INCONCLUSIVE | Replaced bincode 4-byte enum tag with manual 1-byte tag + bincode tuple; saved 3 bytes/record but all scenarios within ±2% noise; modify_10k -1.1% to -1.4% under -3% gate; reverted | [diff](optimization-diffs/inline-enum-tag-u8.patch) |
-| 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT (deep-win) | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold | [diff](optimization-diffs/bufwriter-capacity-1mb.patch) |
-| 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT (deep-win) | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold | [diff](optimization-diffs/larger-default-bufwriter-capacity.patch) |
-| 2026-05-14 | inline-hot-path-functions | src/lib.rs | LOW | INCONCLUSIVE | Added #[inline] to thin accessors, mutation entry points, flush_scratch, maybe_compact, serialize_err; all scenarios within ±1% noise across 3 runs; reverted | [diff](optimization-diffs/inline-hot-path-functions.patch) |
-| 2026-05-14 | single-open-for-replay-and-append | src/lib.rs | LOW | INCONCLUSIVE | Saved 1–2 open syscalls per open_with; reopen_10k drift -0.7% to +0.5%, all within noise; reverted | [diff](optimization-diffs/single-open-for-replay-and-append.patch) |
-| 2026-05-14 | bincode-varint-encoding | src/lib.rs | MEDIUM | REVERTED | +65% regression on reopen_10k — varint decode overhead dwarfs disk-size savings (data is page-cached) | [diff](optimization-diffs/bincode-varint-encoding.patch) |
-| 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT (deep-win) | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise | [diff](optimization-diffs/slurp-log-into-vec.patch) |
-| 2026-05-14 | skip-path-exists-probe | src/lib.rs | LOW | INCONCLUSIVE | Saved one stat syscall per open; reopen_10k drift -0.2% to -0.8%, all within noise; reverted | [diff](optimization-diffs/skip-path-exists-probe.patch) |
-| 2026-05-14 | presize-replay-payload-vec | src/lib.rs | LOW | INCONCLUSIVE | All scenarios within ±1.5% noise; reverted | [diff](optimization-diffs/presize-replay-payload-vec.patch) |
-| 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT (deep-win) | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise | [diff](optimization-diffs/presize-indexmap-from-file-size.patch) |
-| 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT (deep-win) | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise | [diff](optimization-diffs/batch-len-prefix-and-payload.patch) |
+| 2026-05-14 | bundle-inconclusive-round-2 | src/lib.rs, Cargo.toml | HIGH | INCONCLUSIVE | Stacked the 5 still-applicable INCONCLUSIVE attempts that landed *after* `bundle-inconclusive-attempts` (round 1): (1) bincode-2-upgrade-new-config (HIGH: dep 1.3→2.0.1, new typed Configuration, fixed-int), (2) compact-batch-len-prefix-and-payload (compact loop pre-seeds buf with LEN_BYTES + single write_all per record), (3) truncate-scratch-preserve-len-prefix (constructor pre-seeds scratch with [0;LEN_BYTES]; insert/remove/modify use `truncate(LEN_BYTES) + push(tag)`), (4) inline-always-flush-scratch (`#[inline]` → `#[inline(always)]`), (5) bufwriter-capacity-2mb (default 1MB → 2MB). Excluded `combine-len-prefix-and-tag-extend` as subsumed by (3). Result: no scenario regressed past +1.5% (max +0.47% on reopen_10k), but neither KEPT path clears: deep-win fails (only insert_10k_u64 hit -1.41% once, then -0.56% / -0.24%); broad-win fails because reopen_10k went *positive* in 2 of 3 runs (+0.43% / -0.44% / +0.47%) — opposite of round-1's reopen -1.56% to -2.02%; the layout interactions of round-2's 5 changes don't compose like round-1's did. INCONCLUSIVE — reverted | [diff](optimization-diffs/025-bundle-inconclusive-round-2.patch) |
+| 2026-05-14 | bincode-2-upgrade-new-config | src/lib.rs, Cargo.toml | HIGH | INCONCLUSIVE | Upgraded bincode 1.3 → 2.0.1 using the new typed `Configuration<LittleEndian, Fixint, NoLimit>` API (built via `bincode::config::standard().with_fixed_int_encoding().with_little_endian().with_no_limit()` — NOT `legacy()`; fixed-int chosen to preserve byte-compat with bincode 1.x defaults and avoid the known +65% varint reopen regression) and migrated all 4 `serialize_into` callsites to `bincode::serde::encode_into_std_write(...)` and both `deserialize` callsites to `bincode::serde::decode_from_slice(...)` — initial 3-run gate tripped REVERTED on lookup_100k +1.51% in run 3, but a follow-up 3 runs (4/5/6) showed lookup_100k in [-0.09%, +0.31%], confirming the +1.51% was an isolated noise spike; reclassified REVERTED → INCONCLUSIVE; even discounting the spike, neither KEPT gate is satisfied: no scenario clears -1.5% reliably (best is insert_10k_u64 -1.03% / -1.35% on 2 of 6) and broad-win fails because modify_10k drifts both ways (-0.39% to +0.22%) and run-5 reopen_10k spiked +1.02%; user-authorized HIGH-risk dependency swap; ~-0.5% directional improvement on codec-touching scenarios is real but below the noise floor | [diff](optimization-diffs/024-bincode-2-upgrade-new-config.patch) |
+| 2026-05-14 | construct-IndexMap-with-capacity-direct | src/lib.rs | LOW | REVERTED | Replaced `IndexMap::new() + map.reserve(capacity_hint)` with single-step `IndexMap::with_capacity_and_hasher(capacity_hint, Default::default())` — reopen_10k regressed +3.56% / +3.66% / +4.10% across all 3 runs (~5us on 119us baseline); the unconditional `with_capacity_and_hasher(0, ...)` for empty-file opens added allocation work the prior `IndexMap::new()` skipped, AND the moved-out `let capacity_hint` line shifted symbol layout; the original two-step pattern (`new()` always + conditional `reserve()`) was locally optimal | [diff](optimization-diffs/023-construct-IndexMap-with-capacity-direct.patch) |
+| 2026-05-14 | compact-batch-len-prefix-and-payload | src/lib.rs | LOW | INCONCLUSIVE | Applied the KEPT `batch-len-prefix-and-payload` pattern (one `write_all` per record by filling length prefix in scratch) to `compact()`'s rewrite loop — all scenarios within ±0.75% noise (reopen_10k -0.74% / -0.22% / -0.52%, insert_2k_strings +0.68% / +0.41% / +0.15%); bench doesn't exercise compact so this was expected to be flat; reverted | [diff](optimization-diffs/022-compact-batch-len-prefix-and-payload.patch) |
+| 2026-05-14 | uninline-mutation-entry-points | src/lib.rs | LOW | REVERTED | Removed the `#[inline]` annotation from `insert`/`remove`/`modify` to test whether ThinLTO's heuristic would *not* inline them and leave the bodies in lib.rs's text segment (motivated by `inline-always-insert-remove-modify`'s +9% reopen regression from over-inlining) — reopen_10k still regressed +6.14% / +6.05% / +5.65% across all 3 runs; both directions of the inline knob hurt reopen, confirming the existing `#[inline]` (heuristic-friendly) is locally optimal; write paths flat | [diff](optimization-diffs/021-uninline-mutation-entry-points.patch) |
+| 2026-05-14 | inline-always-insert-remove-modify | src/lib.rs | LOW | REVERTED | Promoted `#[inline]` → `#[inline(always)]` on the three public mutation entry points — reopen_10k regressed +9.33% / +9.39% / +9.23% across all 3 runs (~11us on a 119us baseline) despite reopen calling none of those functions; the larger inlined bodies in the bench harness's u64-monomorphisation shifted symbol layout enough to push something off the read path's icache; clear example of how `#[inline(always)]` on hot public APIs can hurt unrelated cold-ish paths through codegen-layout side effects | [diff](optimization-diffs/020-inline-always-insert-remove-modify.patch) |
+| 2026-05-14 | truncate-scratch-preserve-len-prefix | src/lib.rs | LOW | INCONCLUSIVE | Replaced `clear + extend(&[0;4]) + push(tag)` with `truncate(LEN_BYTES) + push(tag)` after pre-seeding scratch with 4 zero bytes at construction — reopen_10k drifts consistently -1.62% / -1.14% / -0.86% (only run 1 clears -1.5%; gate requires all 3) and insert_2k_strings -0.49% / -0.19% / -0.31% (directional, well under gate); reverted | [diff](optimization-diffs/019-truncate-scratch-preserve-len-prefix.patch) |
+| 2026-05-14 | combine-len-prefix-and-tag-extend | src/lib.rs | LOW | INCONCLUSIVE | Fused `extend_from_slice(&[0;4])` + `push(tag)` into one `extend_from_slice(&[0,0,0,0,tag])` across insert/remove/modify — all scenarios within ±1.2% noise; modify_10k -0.71%/+0.01%/+0.16%, reopen_10k -0.59%/-1.20%/-0.24% (directional but neither clears -1.5% gate); reverted | [diff](optimization-diffs/018-combine-len-prefix-and-tag-extend.patch) |
+| 2026-05-14 | inline-always-flush-scratch | src/lib.rs | LOW | INCONCLUSIVE | Promoted `#[inline]` → `#[inline(always)]` on `flush_scratch` (targeted follow-up from inline-hot-path-functions) — all scenarios within ±1% noise; reopen_10k drifts -0.21% / -0.65% / -0.70% (directional but under -1.5% gate); ThinLTO already inlined flush_scratch as expected, the `always` only forces what was already happening | [diff](optimization-diffs/017-inline-always-flush-scratch.patch) |
+| 2026-05-14 | lazy-bufwriter-allocation | src/lib.rs | LOW | REVERTED | Deferred the 1MB BufWriter mmap until first mutation via `log: Option<BufWriter>` + `file: Option<File>` — reopen_10k regressed +0.95% / +1.56% / +2.89% (run 1 over +1.5% guard); the extra struct field + per-write `is_none()` branch + Drop-time discrimination outweighed the saved mmap, and the struct grew enough that codegen layout shifted unfavorably on the read path | [diff](optimization-diffs/016-lazy-bufwriter-allocation.patch) |
+| 2026-05-14 | bufwriter-capacity-2mb | src/lib.rs | LOW | INCONCLUSIVE | Bumped default `buf_capacity` from 1MB to 2MB — all scenarios within ±1% noise (reopen_10k -0.68% / +0.61% / -0.61%); 1MB already past the mmap-threshold ceiling, diminishing returns confirmed; reverted | [diff](optimization-diffs/015-bufwriter-capacity-2mb.patch) |
+| 2026-05-14 | mmap-slurp-buffer-min-1mb | src/lib.rs | LOW | REVERTED | `Vec::with_capacity(total_on_disk).max(1MB)` regressed reopen_10k +4.86% to +5.04% across all 3 runs — the larger mmap region the kernel has to track (1MB) costs more on every reopen than the 240KB slurp it replaced, while only the first 240KB ever gets touched | [diff](optimization-diffs/014-mmap-slurp-buffer-min-1mb.patch) |
+| 2026-05-14 | bundle-inconclusive-attempts | src/lib.rs | MEDIUM | KEPT (deep-win) | Stacked the 4 still-applicable INCONCLUSIVE attempts (inline-enum-tag-u8 + inline-hot-path-functions + single-open-for-replay-and-append + skip-path-exists-probe (subsumed)) — reopen_10k -1.56% to -2.02% across all 3 runs (consistently above -1.5% gate); modify_10k drifts -1.24% to -1.69% (directional but not gate-clearing); presize-replay-payload-vec excluded as obsolete after slurp-log-into-vec landed | [diff](optimization-diffs/013-bundle-inconclusive-attempts.patch) |
+| 2026-05-14 | mark-compact-as-cold | src/lib.rs | LOW | REVERTED | `#[cold]` on `compact()` regressed reopen_10k +3.6% to +4.0% across all 3 runs — binary-layout side effect hurt icache locality on the read path | [diff](optimization-diffs/012-mark-compact-as-cold.patch) |
+| 2026-05-14 | inline-enum-tag-u8 | src/lib.rs | MEDIUM | INCONCLUSIVE | Replaced bincode 4-byte enum tag with manual 1-byte tag + bincode tuple; saved 3 bytes/record but all scenarios within ±2% noise; modify_10k -1.1% to -1.4% under -3% gate; reverted | [diff](optimization-diffs/011-inline-enum-tag-u8.patch) |
+| 2026-05-14 | bufwriter-capacity-1mb | src/lib.rs | LOW | KEPT (deep-win) | -29.4% to -30.0% on reopen_10k across all 3 runs; 256K→1MB stays consistently above glibc dynamic mmap_threshold | [diff](optimization-diffs/010-bufwriter-capacity-1mb.patch) |
+| 2026-05-14 | larger-default-bufwriter-capacity | src/lib.rs | LOW | KEPT (deep-win) | -8.4% to -9.0% on reopen_10k across all 3 runs; 64K→256K bumps allocation above glibc mmap_threshold | [diff](optimization-diffs/009-larger-default-bufwriter-capacity.patch) |
+| 2026-05-14 | inline-hot-path-functions | src/lib.rs | LOW | INCONCLUSIVE | Added #[inline] to thin accessors, mutation entry points, flush_scratch, maybe_compact, serialize_err; all scenarios within ±1% noise across 3 runs; reverted | [diff](optimization-diffs/008-inline-hot-path-functions.patch) |
+| 2026-05-14 | single-open-for-replay-and-append | src/lib.rs | LOW | INCONCLUSIVE | Saved 1–2 open syscalls per open_with; reopen_10k drift -0.7% to +0.5%, all within noise; reverted | [diff](optimization-diffs/007-single-open-for-replay-and-append.patch) |
+| 2026-05-14 | bincode-varint-encoding | src/lib.rs | MEDIUM | REVERTED | +65% regression on reopen_10k — varint decode overhead dwarfs disk-size savings (data is page-cached) | [diff](optimization-diffs/006-bincode-varint-encoding.patch) |
+| 2026-05-14 | slurp-log-into-vec | src/lib.rs | LOW | KEPT (deep-win) | -10.4% to -11.0% on reopen_10k across all 3 runs; mutation paths within ±1% noise | [diff](optimization-diffs/005-slurp-log-into-vec.patch) |
+| 2026-05-14 | skip-path-exists-probe | src/lib.rs | LOW | INCONCLUSIVE | Saved one stat syscall per open; reopen_10k drift -0.2% to -0.8%, all within noise; reverted | [diff](optimization-diffs/004-skip-path-exists-probe.patch) |
+| 2026-05-14 | presize-replay-payload-vec | src/lib.rs | LOW | INCONCLUSIVE | All scenarios within ±1.5% noise; reverted | [diff](optimization-diffs/003-presize-replay-payload-vec.patch) |
+| 2026-05-14 | presize-indexmap-from-file-size | src/lib.rs | LOW | KEPT (deep-win) | -41.2% on reopen_10k across all 3 runs; mutation paths within ±1% noise | [diff](optimization-diffs/002-presize-indexmap-from-file-size.patch) |
+| 2026-05-14 | batch-len-prefix-and-payload | src/lib.rs | LOW | KEPT (deep-win) | -4.5% to -4.8% on reopen_10k across all 3 runs; mutation paths within ±1% noise | [diff](optimization-diffs/001-batch-len-prefix-and-payload.patch) |
 
 ## Detailed entries
 
@@ -57,7 +57,7 @@ already attempted (regardless of verdict).
   Excluded `combine-len-prefix-and-tag-extend` (round-2 INCONCLUSIVE #6) as subsumed by #3 — both alter the same scratch byte sequence; truncate-scratch is the stronger directional bet on reopen.
 - **Risk:** HIGH (bundles a dependency version upgrade, which the skill rubric flags as HIGH; user explicitly authorized the bincode 2 upgrade in the immediately-preceding attempt).
 - **Files touched:** `Cargo.toml` (`bincode = "1.3"` → `bincode = { version = "2.0.1", features = ["serde"] }`); `src/lib.rs` (added `bincode::config::*` imports + `BINCODE_CONFIG` const; updated 4 serialize callsites + 2 deserialize callsites; updated `serialize_err` signature; pre-seeded scratch in `open_with`'s constructor return; rewrote insert/remove/modify write-preludes to `truncate(LEN_BYTES) + push(tag)`; rewrote `compact()` loop's `buf` to mirror flush_scratch's pattern; `#[inline]` → `#[inline(always)]` on `flush_scratch`; `buf_capacity` default 1MB → 2MB).
-- **Diff:** [`optimization-diffs/bundle-inconclusive-round-2.patch`](optimization-diffs/bundle-inconclusive-round-2.patch)
+- **Diff:** [`optimization-diffs/025-bundle-inconclusive-round-2.patch`](optimization-diffs/025-bundle-inconclusive-round-2.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -98,7 +98,7 @@ already attempted (regardless of verdict).
 - **Files touched:**
   - `Cargo.toml` (`bincode = "1.3"` → `bincode = { version = "2.0.1", features = ["serde"] }`).
   - `src/lib.rs`: added `BINCODE_CONFIG` const using the new typed `Configuration` builder API; migrated the 4 `bincode::serialize_into(W, &T)` callsites (insert / remove / modify / compact) to `bincode::serde::encode_into_std_write(T, &mut W, BINCODE_CONFIG)`; migrated the 2 `bincode::deserialize(body)` callsites in the replay loop to `bincode::serde::decode_from_slice(body, BINCODE_CONFIG)` (destructuring the `(T, usize)` return); updated `serialize_err` signature from `bincode::Error` to `bincode::error::EncodeError`.
-- **Diff:** [`optimization-diffs/bincode-2-upgrade-new-config.patch`](optimization-diffs/bincode-2-upgrade-new-config.patch)
+- **Diff:** [`optimization-diffs/024-bincode-2-upgrade-new-config.patch`](optimization-diffs/024-bincode-2-upgrade-new-config.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -136,7 +136,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Collapsing the two-step `IndexMap::new() + map.reserve(capacity_hint)` into a single-step `IndexMap::with_capacity_and_hasher(capacity_hint, Default::default())` would avoid the redundant capacity-check + dual-allocation pattern (new allocates zero, reserve grows). For the reopen_10k bench the hint is non-zero, so `with_capacity_and_hasher` allocates once for exactly the needed size — same end state, fewer hashbrown internal branches.
 - **Risk:** LOW (refactor, semantically equivalent — same final map capacity, same hasher).
 - **Files touched:** `src/lib.rs` (`open_with` — IndexMap construction and the moved-up `capacity_hint` calculation).
-- **Diff:** [`optimization-diffs/construct-IndexMap-with-capacity-direct.patch`](optimization-diffs/construct-IndexMap-with-capacity-direct.patch)
+- **Diff:** [`optimization-diffs/023-construct-IndexMap-with-capacity-direct.patch`](optimization-diffs/023-construct-IndexMap-with-capacity-direct.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -158,7 +158,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Open follow-up from the KEPT `batch-len-prefix-and-payload` ("`compact()` still does two separate `write_all`s per record — could be unified the same way"). Reserve `LEN_BYTES` at the start of the compact loop's `buf`, fill the length in place, and emit length-prefix + payload via a single `write_all` per record. Bench doesn't exercise `compact()` (log stays under the 1MB compact threshold for all five scenarios), so primary outcome is consistency-with-flush_scratch-pattern; secondary outcome is codegen-layout drift that might nudge reopen positively.
 - **Risk:** LOW (no API/format/dep change; on-disk layout identical — same bytes in the same order).
 - **Files touched:** `src/lib.rs` (`compact()`'s rewrite loop).
-- **Diff:** [`optimization-diffs/compact-batch-len-prefix-and-payload.patch`](optimization-diffs/compact-batch-len-prefix-and-payload.patch)
+- **Diff:** [`optimization-diffs/022-compact-batch-len-prefix-and-payload.patch`](optimization-diffs/022-compact-batch-len-prefix-and-payload.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -180,7 +180,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Motivated by the immediately-preceding `inline-always-insert-remove-modify` REVERTED result (+9% reopen regression from forcing inlining of large bodies into the bench harness): the symmetric experiment is to *remove* the `#[inline]` annotation entirely from `insert`/`remove`/`modify`, letting ThinLTO's heuristic decide. The heuristic might judge these ~30-line bodies too big to inline cross-crate, which would keep them in lib.rs's text segment, shrink the bench harness's loop bodies, and free up icache for the read path that reopen exercises.
 - **Risk:** LOW (no API/format/dep change; removal of one annotation).
 - **Files touched:** `src/lib.rs` (`insert`, `remove`, `modify` — dropped `#[inline]`).
-- **Diff:** [`optimization-diffs/uninline-mutation-entry-points.patch`](optimization-diffs/uninline-mutation-entry-points.patch)
+- **Diff:** [`optimization-diffs/021-uninline-mutation-entry-points.patch`](optimization-diffs/021-uninline-mutation-entry-points.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -202,7 +202,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Open follow-up from `inline-always-flush-scratch`. Promoting the three public mutation entry points `insert` / `remove` / `modify` from `#[inline]` to `#[inline(always)]` would let LLVM see the bench harness's 10k-iteration mutation loop as a single fused function (rather than 10k separate calls to monomorphised entry points), opening loop-invariant code motion and tighter register allocation across iterations.
 - **Risk:** LOW (no API/format/dep change; just annotation strength).
 - **Files touched:** `src/lib.rs` (`insert`, `remove`, `modify`).
-- **Diff:** [`optimization-diffs/inline-always-insert-remove-modify.patch`](optimization-diffs/inline-always-insert-remove-modify.patch)
+- **Diff:** [`optimization-diffs/020-inline-always-insert-remove-modify.patch`](optimization-diffs/020-inline-always-insert-remove-modify.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -224,7 +224,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Explicit follow-up from `combine-len-prefix-and-tag-extend`. Pre-seed `scratch` with `LEN_BYTES` zero bytes once at struct construction, then in each mutation use `truncate(LEN_BYTES) + push(tag)` instead of `clear + extend(&[0;4]) + push(tag)`. Saves a 4-byte memcpy (the zero-fill of the length prefix) and one length-store per mutation, ~5–7 cycles each — over 10k mutations, ~50–70us, in the ballpark of clearing the -1.5% gate on `modify_10k`. The first 4 bytes of `scratch` survive between calls — they hold the previous record's length, which is fine because `flush_scratch` overwrites them with the new length before each write.
 - **Risk:** LOW (no API/format/dep change; semantic equivalence verified — the prefix bytes are always overwritten before they're emitted, and all 12 integration tests pass including the torn-tail recovery cases that exercise the on-disk layout).
 - **Files touched:** `src/lib.rs` (`open_with` scratch construction; `insert`, `remove`, `modify` write-preludes).
-- **Diff:** [`optimization-diffs/truncate-scratch-preserve-len-prefix.patch`](optimization-diffs/truncate-scratch-preserve-len-prefix.patch)
+- **Diff:** [`optimization-diffs/019-truncate-scratch-preserve-len-prefix.patch`](optimization-diffs/019-truncate-scratch-preserve-len-prefix.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -246,7 +246,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** The current per-mutation prelude `scratch.clear(); scratch.extend_from_slice(&[0u8; LEN_BYTES]); scratch.push(tag);` calls `Vec` machinery three times — clear (length reset), extend (capacity check + 4-byte memcpy + length update), push (capacity check + 1-byte store + length update). Fusing extend and push into a single `extend_from_slice(&[0, 0, 0, 0, tag])` collapses two capacity checks and two length updates into one each — saving ~2–3 cycles per mutation across `insert`/`remove`/`modify`. Over 10k mutations this is ~20–30us, in the ballpark of clearing the -1.5% gate on `modify_10k` (5.09ms baseline, gate would need ~76us improvement).
 - **Risk:** LOW (no behavior, format, API, or dep change — same bytes written in the same order, just emitted from one slice literal instead of two ops).
 - **Files touched:** `src/lib.rs` (`insert`, `remove`, `modify` write-prelude).
-- **Diff:** [`optimization-diffs/combine-len-prefix-and-tag-extend.patch`](optimization-diffs/combine-len-prefix-and-tag-extend.patch)
+- **Diff:** [`optimization-diffs/018-combine-len-prefix-and-tag-extend.patch`](optimization-diffs/018-combine-len-prefix-and-tag-extend.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -268,7 +268,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Targeted follow-up from `inline-hot-path-functions` ("targeted `#[inline(always)]` on a single specific callee"). Promoting `flush_scratch` from `#[inline]` to `#[inline(always)]` would force inlining at every callsite (`insert`/`remove`/`modify`) even where ThinLTO's size heuristic might pass on it — possibly merging the per-call setup into the bench loop body and exposing loop-invariant code-motion opportunities for LLVM.
 - **Risk:** LOW (one-line annotation change; no behavior, API, format, or dep impact).
 - **Files touched:** `src/lib.rs` (`flush_scratch`).
-- **Diff:** [`optimization-diffs/inline-always-flush-scratch.patch`](optimization-diffs/inline-always-flush-scratch.patch)
+- **Diff:** [`optimization-diffs/017-inline-always-flush-scratch.patch`](optimization-diffs/017-inline-always-flush-scratch.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -290,7 +290,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Deferring the 1MB `BufWriter::with_capacity(...)` mmap until the first mutation (by replacing `log: BufWriter<File>` with the pair `log: Option<BufWriter<File>>` + `file: Option<File>`, maintaining the invariant that exactly one is `Some`) would skip the allocation entirely on read-only opens. On the `reopen_10k` hot path the bench opens-then-drops without mutating, so the buffer is allocated-and-never-touched today — a clear waste.
 - **Risk:** LOW (internal struct change; no API, format, or dep change; all 12 integration tests still pass).
 - **Files touched:** `src/lib.rs` (`IndexMapStore` struct + `Drop`, `open_with`, `flush`, `compact`, `flush_scratch`).
-- **Diff:** [`optimization-diffs/lazy-bufwriter-allocation.patch`](optimization-diffs/lazy-bufwriter-allocation.patch)
+- **Diff:** [`optimization-diffs/016-lazy-bufwriter-allocation.patch`](optimization-diffs/016-lazy-bufwriter-allocation.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -312,7 +312,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Bumping `StoreConfig::default().buf_capacity` from 1MB → 2MB might widen the gap above glibc's dynamic `M_MMAP_THRESHOLD` ceiling further, giving an additional small step on `reopen_10k` (which gained -30% going 256KB→1MB). Explicit open follow-up from `bufwriter-capacity-1mb`'s "investigate whether 2MB or 4MB helps further — diminishing returns expected".
 - **Risk:** LOW (one-constant change; field stays configurable; no API or semantic impact).
 - **Files touched:** `src/lib.rs` (`StoreConfig::default`).
-- **Diff:** [`optimization-diffs/bufwriter-capacity-2mb.patch`](optimization-diffs/bufwriter-capacity-2mb.patch)
+- **Diff:** [`optimization-diffs/015-bufwriter-capacity-2mb.patch`](optimization-diffs/015-bufwriter-capacity-2mb.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -334,7 +334,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Rounding the replay slurp Vec's capacity to at least 1MB (`Vec::with_capacity((total_on_disk as usize).max(1 << 20))`) would force the allocation consistently through `mmap` the way `bufwriter-capacity-1mb` did — for our 240KB log the static glibc threshold is crossed but the dynamic `M_MMAP_THRESHOLD` can drift higher under repeated bench allocations, occasionally routing the slurp through the heap. Forcing ≥1MB should pin it on the mmap path the same way the BufWriter trick did.
 - **Risk:** LOW (one-line capacity bump in `open_with`; no API change, no new deps, unused pages stay lazy).
 - **Files touched:** `src/lib.rs` (`open_with` — the `Vec::with_capacity(total_on_disk as usize)` site only).
-- **Diff:** [`optimization-diffs/mmap-slurp-buffer-min-1mb.patch`](optimization-diffs/mmap-slurp-buffer-min-1mb.patch)
+- **Diff:** [`optimization-diffs/014-mmap-slurp-buffer-min-1mb.patch`](optimization-diffs/014-mmap-slurp-buffer-min-1mb.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.49 ms
@@ -356,7 +356,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Stacking all still-applicable INCONCLUSIVE attempts in one diff exposes additive signal that each individually buried in ±1.5% noise. The four merged: (1) inline-enum-tag-u8 — manual 1-byte tag + bincode tuple, save 3 bytes/record on Insert and skip serde enum dispatch on replay; (2) inline-hot-path-functions — `#[inline]` on accessors, mutation entry points, `flush_scratch`, `maybe_compact`, `serialize_err`; (3) single-open-for-replay-and-append — one `OpenOptions{read, append, create}` handle for slurp + torn-tail set_len + runtime appends (saves 1–2 open syscalls); (4) skip-path-exists-probe — naturally subsumed by (3), no separate `path.exists()` call. presize-replay-payload-vec was excluded as obsolete: the per-record payload buffer it targeted no longer exists since `slurp-log-into-vec` (KEPT) replaced it with a single up-front Vec already sized to `total_on_disk`. This invocation explicitly bundles multiple hypotheses on user request, deviating from the skill's normal ONE-hypothesis-per-invocation rule.
 - **Risk:** MEDIUM (changes on-disk log format via the 1-byte tag — older logs are unreadable; tests confirmed not to depend on byte-level layout).
 - **Files touched:** `src/lib.rs` (removed `LogRef`/`LogOwned` enums and the `Deserialize` import; added `TAG_INSERT`/`TAG_REMOVE` constants; rewrote `open_with` to a single OpenOptions handle and manual-tag replay; rewrote `insert`/`remove`/`modify`/`compact` write paths to emit tag + bincode tuple; added `#[inline]` to public accessors, mutation entry points, both private helpers, and the free `serialize_err`).
-- **Diff:** [`optimization-diffs/bundle-inconclusive-attempts.patch`](optimization-diffs/bundle-inconclusive-attempts.patch)
+- **Diff:** [`optimization-diffs/013-bundle-inconclusive-attempts.patch`](optimization-diffs/013-bundle-inconclusive-attempts.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.46 ms
@@ -378,7 +378,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Adding `#[cold]` to `compact()` would tell LLVM the function is rarely called, allowing it to place compact's body far from the hot mutation/open paths in the text segment, improve icache locality on the hot path, and tilt branch prediction so `maybe_compact`'s ratio check is treated as predicted-not-taken.
 - **Risk:** LOW (annotation only — no behavior change).
 - **Files touched:** `src/lib.rs` (`compact`).
-- **Diff:** [`optimization-diffs/mark-compact-as-cold.patch`](optimization-diffs/mark-compact-as-cold.patch)
+- **Diff:** [`optimization-diffs/012-mark-compact-as-cold.patch`](optimization-diffs/012-mark-compact-as-cold.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.46 ms
@@ -400,7 +400,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Replacing bincode's serde-derived enum encoding (4-byte u32 variant tag + payload) with a manually written 1-byte tag (`0 = Insert`, `1 = Remove`) followed by bincode-serialized payload (`(K, V)` tuple for Insert, `K` for Remove) shrinks each record by 3 bytes (~12% for u64,u64 records) and skips the serde enum-dispatch trait machinery on both the write and replay paths.
 - **Risk:** MEDIUM (changes on-disk log format — older logs are unreadable; tests confirmed not to rely on byte-level layout).
 - **Files touched:** `src/lib.rs` (removed `LogRef`/`LogOwned` enums, added `TAG_INSERT`/`TAG_REMOVE` constants, rewrote `insert`/`remove`/`modify` write paths, replay loop in `open_with`, and `compact` write loop).
-- **Diff:** [`optimization-diffs/inline-enum-tag-u8.patch`](optimization-diffs/inline-enum-tag-u8.patch)
+- **Diff:** [`optimization-diffs/011-inline-enum-tag-u8.patch`](optimization-diffs/011-inline-enum-tag-u8.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.26 ms
   - insert_2k_strings: 5.46 ms
@@ -422,7 +422,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Raising `StoreConfig::default().buf_capacity` from 256KB to 1MB keeps the BufWriter backing buffer comfortably above glibc's dynamic mmap threshold (which starts at 128KB and can be raised by the heuristic up to ~64MB as mmap'd chunks are freed), so the allocator stays on the mmap path even after many alloc/free cycles in tight bench loops.
 - **Risk:** LOW (no API or semantic change; default value tweak; field is configurable).
 - **Files touched:** `src/lib.rs` (`StoreConfig::default`).
-- **Diff:** [`optimization-diffs/bufwriter-capacity-1mb.patch`](optimization-diffs/bufwriter-capacity-1mb.patch)
+- **Diff:** [`optimization-diffs/010-bufwriter-capacity-1mb.patch`](optimization-diffs/010-bufwriter-capacity-1mb.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.34 ms
   - insert_2k_strings: 5.47 ms
@@ -444,7 +444,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Raising `StoreConfig::default().buf_capacity` from 64KB to 256KB pushes the BufWriter backing buffer above glibc's default `M_MMAP_THRESHOLD` (128KB), so allocation goes through `mmap` (page-aligned, lazily zeroed) instead of the heap — every `open_with` allocates a buffer, and on the cold-reopen path that allocation is the only writable region we set up.
 - **Risk:** LOW (no API or semantic change; `buf_capacity` is already configurable).
 - **Files touched:** `src/lib.rs` (`StoreConfig::default`).
-- **Diff:** [`optimization-diffs/larger-default-bufwriter-capacity.patch`](optimization-diffs/larger-default-bufwriter-capacity.patch)
+- **Diff:** [`optimization-diffs/009-larger-default-bufwriter-capacity.patch`](optimization-diffs/009-larger-default-bufwriter-capacity.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.36 ms
   - insert_2k_strings: 5.47 ms
@@ -466,7 +466,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Adding `#[inline]` to the thin public accessors (`len`, `is_empty`, `contains_key`, `get`, `get_index`, `iter`, `keys`, `values`, `as_index_map`), the mutation entry points (`insert`, `remove`, `modify`), the private helpers (`flush_scratch`, `maybe_compact`), and the free function `serialize_err` lets ThinLTO inline call sites in the bench harness more aggressively, potentially eliminating call overhead on per-iteration hot paths.
 - **Risk:** LOW (no behavior change, no API change).
 - **Files touched:** `src/lib.rs`.
-- **Diff:** [`optimization-diffs/inline-hot-path-functions.patch`](optimization-diffs/inline-hot-path-functions.patch)
+- **Diff:** [`optimization-diffs/008-inline-hot-path-functions.patch`](optimization-diffs/008-inline-hot-path-functions.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.36 ms
   - insert_2k_strings: 5.47 ms
@@ -488,7 +488,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Opening the log once with `OpenOptions{read, append, create}` and reusing the same handle for the replay slurp, the torn-tail `set_len`, and the runtime BufWriter appends — instead of doing three separate opens (`File::open` for read, `OpenOptions::write` for truncate, `OpenOptions::create+append` for runtime) — saves one to two `openat` syscalls per `open_with`. `O_APPEND` only affects writes, so an initial `read_to_end` at offset 0 still works.
 - **Risk:** LOW (semantically equivalent — `path.exists()` check folds into `total_on_disk > 0` after the always-create open).
 - **Files touched:** `src/lib.rs` (`open_with`).
-- **Diff:** [`optimization-diffs/single-open-for-replay-and-append.patch`](optimization-diffs/single-open-for-replay-and-append.patch)
+- **Diff:** [`optimization-diffs/007-single-open-for-replay-and-append.patch`](optimization-diffs/007-single-open-for-replay-and-append.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.36 ms
   - insert_2k_strings: 5.47 ms
@@ -510,7 +510,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Switching the bincode codec from the back-compat `bincode::serialize`/`deserialize` helpers (fixint, native-endian) to `bincode::DefaultOptions::new()` (varint, little-endian) shrinks records on disk — small u64 keys/values collapse from 8 bytes to 1 — so both the writer and the slurped replay buffer process fewer bytes.
 - **Risk:** MEDIUM (changes on-disk log format — older logs are unreadable; flagged in code comment).
 - **Files touched:** `src/lib.rs` (added `codec()` helper, replaced all 5 bincode call sites in `insert`, `remove`, `modify`, `compact`, and the `open_with` replay).
-- **Diff:** [`optimization-diffs/bincode-varint-encoding.patch`](optimization-diffs/bincode-varint-encoding.patch)
+- **Diff:** [`optimization-diffs/006-bincode-varint-encoding.patch`](optimization-diffs/006-bincode-varint-encoding.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.36 ms
   - insert_2k_strings: 5.47 ms
@@ -532,7 +532,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Reading the whole log into a `Vec<u8>` via `File::read_to_end` and iterating in-memory over length-prefixed slices removes per-record `BufReader` refills and the memcpy into a separate `payload` buffer that the streaming path needed; `bincode::deserialize` can borrow the slice directly.
 - **Risk:** LOW (no public API change, no new dependency — `BufReader` import dropped because it's no longer used).
 - **Files touched:** `src/lib.rs` (`open_with`, removed unused `BufReader` import).
-- **Diff:** [`optimization-diffs/slurp-log-into-vec.patch`](optimization-diffs/slurp-log-into-vec.patch)
+- **Diff:** [`optimization-diffs/005-slurp-log-into-vec.patch`](optimization-diffs/005-slurp-log-into-vec.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.36 ms
   - insert_2k_strings: 5.49 ms
@@ -554,7 +554,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Replacing the `path.exists()` + `File::open()` pair with a single `File::open()` (treating `NotFound` as "no existing log") saves one stat syscall per `open`, most visible on `reopen_10k` where the open call is the entire timed work.
 - **Risk:** LOW.
 - **Files touched:** `src/lib.rs` (`open_with`).
-- **Diff:** [`optimization-diffs/skip-path-exists-probe.patch`](optimization-diffs/skip-path-exists-probe.patch)
+- **Diff:** [`optimization-diffs/004-skip-path-exists-probe.patch`](optimization-diffs/004-skip-path-exists-probe.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.36 ms
   - insert_2k_strings: 5.46 ms
@@ -576,7 +576,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Initialising the replay `payload` buffer with `Vec::with_capacity(256)` instead of `Vec::new()` saves a couple of early `realloc` calls as the first records grow the buffer.
 - **Risk:** LOW.
 - **Files touched:** `src/lib.rs` (`open_with`).
-- **Diff:** [`optimization-diffs/presize-replay-payload-vec.patch`](optimization-diffs/presize-replay-payload-vec.patch)
+- **Diff:** [`optimization-diffs/003-presize-replay-payload-vec.patch`](optimization-diffs/003-presize-replay-payload-vec.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.37 ms
   - insert_2k_strings: 5.45 ms
@@ -598,7 +598,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Calling `IndexMap::reserve(file_size / 24)` before the replay loop in `open_with` lets the map skip the ~14 grow-rehash steps it would otherwise do while filling from zero to thousands of entries, cutting cold-reopen latency.
 - **Risk:** LOW.
 - **Files touched:** `src/lib.rs` (`open_with`).
-- **Diff:** [`optimization-diffs/presize-indexmap-from-file-size.patch`](optimization-diffs/presize-indexmap-from-file-size.patch)
+- **Diff:** [`optimization-diffs/002-presize-indexmap-from-file-size.patch`](optimization-diffs/002-presize-indexmap-from-file-size.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.36 ms
   - insert_2k_strings: 5.46 ms
@@ -620,7 +620,7 @@ already attempted (regardless of verdict).
 - **Hypothesis:** Reserving `LEN_BYTES` at the start of the per-record `scratch` buffer and filling the length in place lets `flush_scratch` emit the length-prefix and payload in a single `BufWriter::write_all`, removing one call per mutation.
 - **Risk:** LOW.
 - **Files touched:** `src/lib.rs` (`insert`, `remove`, `modify`, `flush_scratch`).
-- **Diff:** [`optimization-diffs/batch-len-prefix-and-payload.patch`](optimization-diffs/batch-len-prefix-and-payload.patch)
+- **Diff:** [`optimization-diffs/001-batch-len-prefix-and-payload.patch`](optimization-diffs/001-batch-len-prefix-and-payload.patch)
 - **Baseline (pre-change) p50:**
   - insert_10k_u64: 5.37 ms
   - insert_2k_strings: 5.47 ms
@@ -645,7 +645,7 @@ Append entries below in reverse-chronological order. Template:
 - **Hypothesis:** one-sentence claim.
 - **Risk:** LOW / MEDIUM / HIGH.
 - **Files touched:** `path/a.rs`, `path/b.rs`.
-- **Diff:** [`optimization-diffs/<slug>.patch`](optimization-diffs/<slug>.patch)
+- **Diff:** [`optimization-diffs/<NNN>-<slug>.patch`](optimization-diffs/<NNN>-<slug>.patch)
 - **Baseline (pre-change) p50:**
   - scenario_a: 1.23 ms
   - scenario_b: 4.56 us
