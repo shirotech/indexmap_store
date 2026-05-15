@@ -17,6 +17,65 @@
 //!   into place.
 //!
 //! The store owns the file; concurrent writers are not supported.
+//!
+//! # Quick start
+//!
+//! ```
+//! use indexmap_store::IndexMapStore;
+//!
+//! let dir = tempfile::tempdir().unwrap();
+//! let path = dir.path().join("users.log");
+//!
+//! let mut store: IndexMapStore<String, u64> = IndexMapStore::open(&path)?;
+//! store.insert("alice".into(), 1)?;
+//! store.insert("bob".into(), 2)?;
+//! store.modify(&"alice".into(), |v| *v += 100)?;
+//! store.remove(&"bob".into())?;
+//! store.flush()?;
+//!
+//! assert_eq!(store.get(&"alice".into()), Some(&101));
+//! assert_eq!(store.len(), 1);
+//!
+//! // Reopen: state is recovered from the log.
+//! drop(store);
+//! let store: IndexMapStore<String, u64> = IndexMapStore::open(&path)?;
+//! assert_eq!(store.get(&"alice".into()), Some(&101));
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
+//! # Custom configuration
+//!
+//! ```
+//! use indexmap_store::{IndexMapStore, StoreConfig};
+//!
+//! let dir = tempfile::tempdir().unwrap();
+//! let cfg = StoreConfig {
+//!     sync_on_write: true,        // fsync every mutation
+//!     min_compact_bytes: 4 << 20, // wait until log > 4 MiB before compacting
+//!     compact_ratio: 3.0,         // compact when total_records >= 3 * live
+//!     buf_capacity: 64 * 1024,
+//! };
+//! let mut store: IndexMapStore<u32, String> =
+//!     IndexMapStore::open_with(dir.path().join("kv.log"), cfg)?;
+//! store.insert(1, "one".into())?;
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
+//! # Iteration preserves insertion order
+//!
+//! ```
+//! use indexmap_store::IndexMapStore;
+//!
+//! let dir = tempfile::tempdir().unwrap();
+//! let mut store: IndexMapStore<String, i32> =
+//!     IndexMapStore::open(dir.path().join("ord.log"))?;
+//! for (k, v) in [("c", 3), ("a", 1), ("b", 2)] {
+//!     store.insert(k.into(), v)?;
+//! }
+//! let keys: Vec<_> = store.keys().cloned().collect();
+//! assert_eq!(keys, ["c", "a", "b"]);
+//! # Ok::<(), std::io::Error>(())
+//! ```
 
 use indexmap::IndexMap;
 use serde::{Serialize, de::DeserializeOwned};

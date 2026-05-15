@@ -1,12 +1,20 @@
 [package]
 name = "indexmap_store"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
-description = "Mutable, persistent key-value store backed by an IndexMap with an append-only log."
-license = "MIT OR Apache-2.0"
+description = "Persistent IndexMap for Rust — embedded key-value store with in-memory hash map + append-only WAL on disk. O(1) get/insert/remove, insertion-order iteration, crash-safe recovery, automatic log compaction, serde-generic keys and values. No dependencies on sled/sqlite."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/shirotech/indexmap_store"
+homepage = "https://github.com/shirotech/indexmap_store"
+documentation = "https://docs.rs/indexmap_store"
+keywords = ["indexmap", "key-value", "persistent", "database", "embedded"]
+categories = ["data-structures", "database-implementations", "filesystem"]
 include = [
     "src/**/*.rs",
     "Cargo.toml",
+    "README.md",
+    "LICENSE",
 ]
 
 [dependencies]
