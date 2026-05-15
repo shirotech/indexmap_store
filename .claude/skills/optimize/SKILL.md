@@ -39,12 +39,13 @@ Pick the highest-value untried hypothesis from the list below (or invent one in 
 - pre-size the replay `payload` Vec on the largest record observed so far
 - batch length-prefix + payload into a single `write_all` via a single buffer (avoid two BufWriter writes per record)
 - inline `flush_scratch` callsite that's only used once
-- replace `Vec::resize` with `Vec::clear` + `Vec::reserve` + unsafe `set_len` (audit — pushes into MEDIUM)
 - use `IndexMap::with_capacity_and_hasher` with a faster hasher (e.g., `foldhash`/`ahash`) — adds a dep, MEDIUM
 - skip the `path.exists()` probe and rely on `OpenOptions::read` errors
 
 **MEDIUM risk** (proceed but flag clearly in the log):
 
+- introduce `unsafe` (must clear the §5b miri gate; see soundness audit requirements)
+- replace `Vec::resize` with `Vec::clear` + `Vec::reserve` + unsafe `set_len`
 - swap bincode for a hand-rolled fixed-prefix codec for primitives
 - add a snapshot-file path (separate from WAL) for faster cold reopen
 - coalesce compaction into background after release of the write lock
@@ -52,7 +53,6 @@ Pick the highest-value untried hypothesis from the list below (or invent one in 
 **HIGH risk** (STOP and ask user before implementing):
 
 - change public API signatures or exported types
-- introduce `unsafe`
 - swap a dependency (bincode → rkyv, indexmap → custom)
 - add mmap
 
@@ -113,6 +113,44 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 If **either** fails: revert (see §8), record verdict `REVERTED` with reason `"test gate failed: <summary>"`, commit (§9), exit.
+
+---
+
+## 5b. Miri gate (mandatory whenever the diff adds or modifies `unsafe`)
+
+Skip this section if the diff contains zero `unsafe` blocks/functions and modifies no existing `unsafe` code. Otherwise it is **mandatory** — soundness bugs in `unsafe` are not caught by `cargo test` and can silently corrupt memory under release optimization.
+
+Before running miri, write a one-paragraph **soundness audit** for each new/modified `unsafe` block, covering:
+
+- What invariants must hold for the block to be sound (e.g. capacity ≥ N, bytes 0..N initialized, no aliasing live reference).
+- Where each invariant is established and why it cannot be broken between establishment and the unsafe op.
+- What would happen if the invariant were broken (UB classification).
+
+Then run miri against the integration test suite:
+
+```bash
+MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" \
+  cargo +nightly miri test --test integration
+```
+
+Flag notes:
+
+- `-Zmiri-disable-isolation` — required because the integration tests touch the real filesystem (tempfile, file open, fsync). Without it miri aborts on the first `mkdir` syscall.
+- `-Zmiri-ignore-leaks` — required because at least one existing test (`sync_on_write_durable`) calls `std::mem::forget` intentionally to simulate a crash before drop. New unsafe code should not introduce *new* leaks; if miri reports a leak whose backtrace points at the diff under test, treat it as a miri failure.
+
+A pass requires: **all tests OK, no UB errors**. UB categories that constitute failure include (non-exhaustive):
+
+- "out-of-bounds pointer arithmetic"
+- "memory access failed: pointer not dereferenceable"
+- "trying to retag … from <Unique>" (Stacked Borrows violation)
+- "constructing invalid value at .<NAME>: encountered uninitialized memory"
+- "dereferencing pointer failed: alloc … has been freed" (use-after-free)
+- "data race detected"
+- "deadlock"
+
+If miri fails: revert (see §8), record verdict `REVERTED` with reason `"miri gate failed: <UB summary + which unsafe block>"`, include the soundness-audit paragraph in the OPTIMIZATIONS.md entry so the next attempt can learn from it, commit (§9), exit.
+
+If miri passes: include the soundness audit and the exact `MIRIFLAGS` used in the OPTIMIZATIONS.md detailed entry (under a **Soundness audit** subsection). Miri runs against debug-profile codegen; this is sufficient for soundness but does not validate that the release-optimized build preserves the same behavior — the §6 bench gate covers correctness under release.
 
 ---
 
@@ -240,8 +278,9 @@ Do **not** push.
 ## Hard rules
 
 - ONE hypothesis per invocation. No bundling.
-- Never modify the public API, introduce `unsafe`, or swap a dependency without explicit user approval (HIGH risk — stop and ask).
-- Never disable tests, weaken assertions, or skip the clippy gate.
+- Never modify the public API or swap a dependency without explicit user approval (HIGH risk — stop and ask).
+- `unsafe` is MEDIUM-risk and allowed without prompting, but the §5b miri gate is mandatory whenever the diff adds or modifies any `unsafe` block. A passing miri run plus a written soundness audit are both required before the bench gate runs.
+- Never disable tests, weaken assertions, skip the clippy gate, or skip the miri gate when `unsafe` is touched.
 - Never reduce `BENCH_INVOKES` below 3 or `BENCH_ROUNDS × BENCH_PER_ROUND` below 200 during the 3-run validation.
 - Never overwrite `bench_results.json` mid-cycle. `--verify` reads it as the baseline and must see the pre-change values; refresh it only after a KEPT verdict via a non-verify `cargo bench` run.
 - Never skip §4a (diff capture) or include `optimization-diffs/` in the §8 revert paths — the patch must survive for future resurfacing.
