@@ -1,0 +1,23 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 6ca396f..da712db 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -167,8 +167,16 @@ where
+             if capacity_hint > 0 {
+                 map.reserve(capacity_hint);
+             }
+-            let mut buf: Vec<u8> = Vec::with_capacity(total_on_disk as usize);
+-            file.read_to_end(&mut buf)?;
++            let n = total_on_disk as usize;
++            let mut buf: Vec<u8> = Vec::with_capacity(n);
++            // SAFETY: capacity is exactly `n`; `read_exact` below writes all
++            // `n` bytes before any code reads from `buf`. If `read_exact`
++            // fails, the `?` propagates the error and `buf` is dropped without
++            // any read of its contents (u8 has no drop glue).
++            unsafe {
++                buf.set_len(n);
++            }
++            file.read_exact(&mut buf)?;
+ 
+             let mut offset: usize = 0;
+             while offset + LEN_BYTES <= buf.len() {
