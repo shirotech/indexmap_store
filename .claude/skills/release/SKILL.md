@@ -207,8 +207,8 @@ Run the full pre-release test sweep against the release profile where applicable
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo clippy --lib --tests -- -D warnings
+cargo test --lib --tests
 cargo test --doc
 cargo test --release --test integration
 cargo build --release
@@ -217,6 +217,7 @@ cargo doc --no-deps
 
 Notes:
 
+- The bench harness (`benches/store_bench.rs`) is **deliberately excluded** from every gate above — benches measure runtime, not correctness, and the bench gate already runs as part of `/optimize`. Including benches here would (a) pay multi-minute compile cost on every release, (b) trip on env-only assertions that real runs of `/optimize` already cover, and (c) tempt running `cargo bench` during a release, which corrupts the optimization baseline. Use `--lib --tests` everywhere instead of `--all-targets`.
 - `cargo test --doc` catches broken examples in rustdoc, which are part of the published crate surface and a common silent breakage.
 - `cargo test --release --test integration` runs the integration suite under the same optimization level the user will get from crates.io, catching release-only UB or codegen surprises before publishing.
 - `cargo build --release` is cheap once the test suite has compiled the release profile; it also primes `cargo package` in §8.
