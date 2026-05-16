@@ -391,10 +391,7 @@ where
         // at the head of `scratch` before bincode appends the payload, so the
         // first four bytes are always within `scratch.len()` and allocated.
         unsafe {
-            std::ptr::write_unaligned(
-                self.scratch.as_mut_ptr() as *mut u32,
-                payload_len.to_le(),
-            );
+            std::ptr::write_unaligned(self.scratch.as_mut_ptr() as *mut u32, payload_len.to_le());
         }
         self.log.write_all(&self.scratch)?;
         self.log_bytes += self.scratch.len() as u64;

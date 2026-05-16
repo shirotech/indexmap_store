@@ -268,7 +268,10 @@ fn load_previous() -> Option<Results> {
     };
     let s = fs::read_to_string(&p).ok()?;
     let v: serde_json::Value = serde_json::from_str(&s).ok()?;
-    let schema = v.get("schema_version").and_then(|x| x.as_u64()).unwrap_or(0);
+    let schema = v
+        .get("schema_version")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
     if schema as u32 != SCHEMA_VERSION {
         eprintln!(
             "ignoring baseline at {} — schema v{} != current v{}; this run becomes the new baseline.",
@@ -332,9 +335,7 @@ fn print_table(current: &Results, previous: Option<&Results>, threshold: f64) {
         );
     }
     println!();
-    println!(
-        "anchor = 20%-trimmed mean of pooled round medians (stable across regime bimodality)"
-    );
+    println!("anchor = 20%-trimmed mean of pooled round medians (stable across regime bimodality)");
     println!("rmCV%  = coefficient of variation across per-round medians (lower = more stable)");
     println!();
 }
@@ -424,11 +425,7 @@ fn maybe_respawn_no_aslr() {}
 
 #[cfg(target_os = "linux")]
 fn aslr_label() -> &'static str {
-    if aslr_already_off() {
-        "off"
-    } else {
-        "on"
-    }
+    if aslr_already_off() { "off" } else { "on" }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -489,7 +486,9 @@ fn spawn_background_load(cpus: &[usize]) -> LoadHandle {
                 // Tight busy loop. Several rounds per iter so the atomic
                 // load doesn't dominate the cycle budget.
                 for _ in 0..1024 {
-                    x = x.wrapping_mul(0x100000001B3).wrapping_add(0xCBF29CE484222325);
+                    x = x
+                        .wrapping_mul(0x100000001B3)
+                        .wrapping_add(0xCBF29CE484222325);
                 }
             }
             black_box(x);
@@ -506,7 +505,6 @@ fn spawn_background_load(_cpus: &[usize]) -> LoadHandle {
         handles: Vec::new(),
     }
 }
-
 
 // ---------- scratch root ----------
 
@@ -698,7 +696,13 @@ where
 }
 
 fn timer_label() -> &'static str {
-    TIMER.with(|t| if t.borrow().is_perf() { "perf-cycles" } else { "wall" })
+    TIMER.with(|t| {
+        if t.borrow().is_perf() {
+            "perf-cycles"
+        } else {
+            "wall"
+        }
+    })
 }
 
 // ---------- scenarios ----------
@@ -875,7 +879,10 @@ fn parse_env() -> Env {
     // disables the background load entirely.
     let load_cpus: Vec<usize> = match env::var("BENCH_LOAD_CPUS") {
         Ok(s) if s.eq_ignore_ascii_case("off") || s.is_empty() => Vec::new(),
-        Ok(s) => s.split(',').filter_map(|t| t.trim().parse::<usize>().ok()).collect(),
+        Ok(s) => s
+            .split(',')
+            .filter_map(|t| t.trim().parse::<usize>().ok())
+            .collect(),
         Err(_) => vec![8, 12, 4, 5],
     };
     // Verify mode: run the full bench pipeline N times against a fixed
@@ -941,8 +948,7 @@ fn run_one_invocation(
             .map(|f| name.contains(f))
             .unwrap_or(true)
     };
-    let filtered: Vec<(&str, Scenario)> =
-        scenarios.into_iter().filter(|(n, _)| want(n)).collect();
+    let filtered: Vec<(&str, Scenario)> = scenarios.into_iter().filter(|(n, _)| want(n)).collect();
     if filtered.is_empty() {
         eprintln!("no scenarios matched BENCH_FILTER; exiting.");
         return None;
@@ -1180,13 +1186,7 @@ fn verify_results_path() -> PathBuf {
 /// `bench_results.json` is NOT overwritten by this mode — the baseline file
 /// stays untouched, eliminating the need for callers to back it up to /tmp
 /// before running the verification cycle.
-fn verify_mode(
-    e: &Env,
-    n: usize,
-    pinned_cpu: Option<usize>,
-    pages_locked: bool,
-    aslr_off: bool,
-) {
+fn verify_mode(e: &Env, n: usize, pinned_cpu: Option<usize>, pages_locked: bool, aslr_off: bool) {
     let baseline = match load_previous() {
         Some(b) => b,
         None => {
@@ -1401,9 +1401,7 @@ fn main() {
     );
     println!(
         "aggregator=trimmed-mean(20%) over {} x {} round-medians  |  schema=v{}",
-        current.config.invokes,
-        current.config.rounds,
-        SCHEMA_VERSION
+        current.config.invokes, current.config.rounds, SCHEMA_VERSION
     );
     print_table(&current, previous.as_ref(), e.threshold);
     save(&current).expect("write bench results");
