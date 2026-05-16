@@ -1,5 +1,5 @@
 ---
-description: Cut a new release of the indexmap_store crate end-to-end. Verifies master is clean, integration tests pass, and clippy is warning-free; determines the prior release baseline from the most recent `release:` commit; classifies every commit since that baseline as user-facing or internal; proposes a SemVer bump (MAJOR/MINOR/PATCH, with pre-1.0 rules); shows the user the proposed version + release notes for approval; then prepends a new section to `CHANGELOG.md` at the project root (Keep a Changelog format), bumps Cargo.toml, refreshes Cargo.lock, runs the publish dry-run, commits as `release: X.Y.Z — <summary>`, and tags `vX.Y.Z`. Stops short of `cargo publish` and `git push` — those require explicit user action.
+description: Cut a new release of the indexmap_store crate end-to-end. Verifies master is clean, integration tests pass, and clippy is warning-free; determines the prior release baseline from the most recent `release:` commit; classifies every commit since that baseline as user-facing or internal; proposes a SemVer bump (MAJOR/MINOR/PATCH, with pre-1.0 rules); shows the user the proposed version + release notes for approval; then prepends a new section to `CHANGELOG.md` at the project root (Keep a Changelog format), bumps Cargo.toml, refreshes Cargo.lock, runs the publish dry-run, commits as `release: X.Y.Z — <summary>`, and tags `vX.Y.Z`. **Resumable**: each section checkpoints to `/tmp/indexmap_store-release-state.json`, so a re-invocation after a test-gate failure, fmt detour, or side-quest commit (style/skill/chore) continues from the last completed section without re-asking the user for already-approved decisions. Stops short of `cargo publish` and `git push` — those require explicit user action.
 ---
 
 # /release
@@ -46,6 +46,91 @@ Run in order; if any check fails, print why and stop. Do not attempt to fix the 
    grep -E '^version\s*=' Cargo.toml
    ```
    Must match exactly one `version = "X.Y.Z"` line under `[package]`. Capture the value as `CURRENT_VERSION`.
+
+---
+
+## 0a. Resume protocol — pick up an interrupted release
+
+The skill is **resumable**: any prior invocation in this repo (test-gate failure, fmt detour, side-quest commit landing, accidental cancel) can be continued without re-asking the user for decisions they already approved. State lives in a single JSON file at `/tmp/indexmap_store-release-state.json` (tmpfs scope — one in-flight release per machine).
+
+### State-file shape
+
+```json
+{
+  "schema_version": 1,
+  "current_version": "0.2.2",
+  "next_version": "0.2.3",
+  "bump_category": "patch",
+  "baseline_sha": "c2c701d3e83abfaae3bd6caced2ad83c85075e70",
+  "head_sha_at_approval": "075aec0...",
+  "internal_only_override": true,
+  "notes_path": "/tmp/release-notes-0.2.3.md",
+  "approved": true,
+  "checkpoint": "post-§5"
+}
+```
+
+Valid `checkpoint` values, in order: `post-§3`, `post-§4`, `post-§5`, `post-§6`, `post-§7`, `post-§8`, `post-§9`. Sections only update `checkpoint` once their own work fully completes. Step §10 deletes the state file on success.
+
+### Resume decision logic
+
+1. Read the state file. If absent → fresh run, fall through to §1 as written.
+2. If present, **validate** every field before honoring it. Resume is only safe when the world the user approved is still recognizable:
+   - `current_version` matches the `version = ` in HEAD's `Cargo.toml` (for checkpoints ≤ `post-§6`).
+   - `next_version` matches HEAD's `Cargo.toml` (for checkpoints ≥ `post-§7`).
+   - `baseline_sha` resolves and still equals the §1 detection on the current HEAD.
+   - For checkpoints ≥ `post-§5`: `head_sha_at_approval` is an ancestor of (or equal to) HEAD, AND no commits land between `head_sha_at_approval` and HEAD other than the documented allowed side-quests (`style:`, `skill:`, `chore:` — i.e. nothing that would change §2 classification). If a `feat:`/`fix:`/`perf:`/`docs:`/breaking commit landed since approval, **invalidate**: the changelog the user approved is now stale.
+3. If validation fails → print the specific reason, delete `/tmp/indexmap_store-release-state.json` and any `/tmp/release-notes-*.md` referenced by it, fall through to §1 as a fresh run.
+4. If validation succeeds → print:
+   ```
+   Resuming release of v<next_version> from checkpoint <checkpoint>.
+     Approved at:  <head_sha_at_approval short> on <baseline_sha short>..
+     Plan:         <bump_category>, internal-only override = <yes/no>
+     Notes:        <notes_path>  (exists: yes/no)
+   ```
+   then jump directly to the section table below.
+
+### Resume entry points
+
+| State checkpoint | Skip up through | Restart from |
+| ---------------- | --------------- | ------------ |
+| `post-§3`        | §3              | §4 (re-render notes) |
+| `post-§4`        | §4              | §5 (re-ask only if `approved=false`; auto-confirm if `approved=true`) |
+| `post-§5`        | §5              | §6 (run full test gate again — gate is the final verification, never skipped on resume) |
+| `post-§6`        | §6              | §7 (idempotent — see §7) |
+| `post-§7`        | §7              | §8 (read-only, always safe to re-run) |
+| `post-§8`        | §8              | §9 (idempotent — see §9) |
+| `post-§9`        | §9              | §10 (final summary + state cleanup) |
+
+§1, §2 always re-run on resume (deterministic, cheap, used to revalidate state).
+
+### Per-section idempotency
+
+- **§3**: pure computation; safe to re-run.
+- **§4**: overwrites `/tmp/release-notes-<NEXT_VERSION>.md` and prepends to `CHANGELOG.md` only if the `## [<NEXT_VERSION>] —` heading is not already present. On resume where `CHANGELOG.md` already has the section, re-render the scratch file (commit body source) but **do not** prepend a second section.
+- **§5**: if state has `approved=true`, skip the prompt and print "Approval already on file — skipping §5 confirmation."
+- **§6**: always runs end-to-end on resume. Test gate is the last line of defense; correctness can change between runs and re-checking is cheap relative to publish risk.
+- **§7**: check `grep '^version = "<NEXT_VERSION>"' Cargo.toml` and `grep '"indexmap_store" Cargo.lock | grep <NEXT_VERSION>`. If both already match, skip the edits and proceed to §8. Otherwise apply edits as written.
+- **§8**: pure dry-run; always safe to re-run.
+- **§9**: check `git log -1 --format='%s'` for `release: <NEXT_VERSION>` AND `git tag -l v<NEXT_VERSION>`. If both present at HEAD, skip the commit + tag and proceed to §10. If only one is present, abort with "partial §9 state — inspect manually" rather than auto-repair (mismatched commit/tag pairings are dangerous to fix blindly).
+- **§10**: deletes the state file and `/tmp/release-notes-<NEXT_VERSION>.md`. Always runs.
+
+### State-file writes (each section, on completion)
+
+After each numbered section finishes its work, **before printing its end-of-section output**, atomically update the state file's `checkpoint` field:
+
+```bash
+# pseudocode — use a python/jq one-liner to merge fields, then atomic mv
+TMP=$(mktemp /tmp/indexmap_store-release-state.XXXX.json)
+jq '.checkpoint = "post-§<N>"' /tmp/indexmap_store-release-state.json > "$TMP"
+mv "$TMP" /tmp/indexmap_store-release-state.json
+```
+
+If `jq` is unavailable, write the full JSON document from scratch — the schema is small enough.
+
+### Manual reset
+
+If state is wedged (e.g. user edited `Cargo.toml` by hand between runs), the user can simply `rm /tmp/indexmap_store-release-state.json` to force a fresh run. The skill should mention this in the abort message whenever validation fails.
 
 ---
 
@@ -121,6 +206,8 @@ Then map to the next version, **using pre-1.0 SemVer rules** while `CURRENT_VERS
 
 Set `NEXT_VERSION` accordingly. Do not edit `Cargo.toml` yet.
 
+**Checkpoint write:** seed/update `/tmp/indexmap_store-release-state.json` with `current_version`, `next_version`, `bump_category`, `baseline_sha`, `internal_only_override` (true if user overrode the "only internal commits → no release needed" default), `approved=false`, `checkpoint=post-§3`. This makes the resume entry-table valid as soon as the bump decision exists.
+
 ---
 
 ## 4. Build the release notes (user-affecting only)
@@ -175,6 +262,10 @@ Use the commit short SHA from `git rev-parse --short <SHA>`. Strip the conventio
 
 Also write the same rendered new section (just that one section, not the whole file) to `/tmp/release-notes-<NEXT_VERSION>.md` — the §9 commit message body and §10 summary read from this scratch file. The committed source of truth is `CHANGELOG.md`; the scratch file exists only so the commit body and the GitHub-Release paste-buffer match what landed in the changelog.
 
+**Checkpoint write:** update state file with `notes_path=/tmp/release-notes-<NEXT_VERSION>.md` and `checkpoint=post-§4`.
+
+**Idempotent re-entry:** if a resume runs §4 again, the prepend to `CHANGELOG.md` must be a no-op when the `## [<NEXT_VERSION>] —` heading is already present. Detect with `grep -F "## [<NEXT_VERSION>]" CHANGELOG.md`; if found, only refresh `/tmp/release-notes-<NEXT_VERSION>.md` and skip the file write. The scratch file is the source of truth for §9's commit body, so it must always exist at this point.
+
 ---
 
 ## 5. Show the user the plan and get approval
@@ -195,9 +286,13 @@ CHANGELOG.md section preview (will be prepended)
 Proceed? (yes / no / different-version)
 ```
 
-If the user picks `different-version`, accept their explicit `X.Y.Z` value and re-render §4 against it before proceeding.
+If the user picks `different-version`, accept their explicit `X.Y.Z` value and re-render §4 against it before proceeding. Also rewrite the state file with the new `next_version` and `notes_path`, and bump `checkpoint` back to `post-§3` until §4 reruns.
 
-If the user says `no`, exit with no changes made. The `/tmp/release-notes-*` scratch file may stay (tmpfs, self-cleans on reboot).
+If the user says `no`, **delete the state file** (the approval is the gate — without it there is nothing to resume) and exit with no changes made. The `/tmp/release-notes-*` scratch file may stay (tmpfs, self-cleans on reboot).
+
+If the user says `yes`, set `approved=true`, `head_sha_at_approval=<current HEAD>`, and `checkpoint=post-§5` in the state file before proceeding to §6.
+
+**Resume note:** if state arrives at §5 with `approved=true` and validation passed in §0a, skip the prompt entirely and print `Approval already on file — skipping §5 confirmation.` instead.
 
 ---
 
@@ -225,6 +320,10 @@ Notes:
 
 If `cargo fmt --check` is the only failure, fix it with `cargo fmt`, but verify the resulting diff is purely whitespace before continuing.
 
+**Side-quest abort path:** when the gate fails in a way that requires a separate commit to fix (e.g. fmt drift, clippy lint that needs a code change, doc-link rot in an unrelated docstring, etc.), the skill **aborts** but leaves the state file with `checkpoint=post-§5` so the next /release invocation resumes at §6 without re-asking for approval. The user lands the fix as a `style:`/`chore:`/`docs:`-internal/`fix:` commit and re-invokes. §0a validation will tolerate the new internal commit (it does not change the approved user-facing notes). If the fix was user-facing (`fix:` for a real bug uncovered by the gate), the state file is invalidated by §0a's "new user-facing commit landed" check, and the user re-approves from scratch — correct behavior, because the changelog now needs to mention the bug fix.
+
+**Checkpoint write (on full pass):** update state file with `checkpoint=post-§6`.
+
 ---
 
 ## 7. Bump the version and write CHANGELOG.md
@@ -248,6 +347,10 @@ grep -A1 '^name = "indexmap_store"$' Cargo.lock
 
 If the version in `Cargo.lock` does not match `NEXT_VERSION`, abort with a clear error — something is wrong with the workspace state.
 
+**Idempotent re-entry:** if `Cargo.toml` already lists `version = "<NEXT_VERSION>"` and `CHANGELOG.md` already contains a `## [<NEXT_VERSION>] —` heading, skip both edits. Re-running `cargo check` to validate the lockfile is still cheap and worth doing.
+
+**Checkpoint write:** update state file with `checkpoint=post-§7`.
+
 ---
 
 ## 8. Package dry-run
@@ -268,6 +371,8 @@ cargo package --no-verify
 If `CHANGELOG.md` is missing from the `cargo package --list` output, the `include = […]` array in `Cargo.toml` does not list it. Add `"CHANGELOG.md"` to the `include` array as part of this same release commit (it is a release-coupled metadata change, not unrelated churn) and re-run the dry-run.
 
 `--no-verify` skips the redundant compile (we already built in §6) but still produces the tarball. If `cargo package` errors (e.g. uncommitted changes warning because `Cargo.toml` was just edited), pass `--allow-dirty` and proceed — the change will be committed in §9.
+
+**Checkpoint write:** update state file with `checkpoint=post-§8`.
 
 ---
 
@@ -294,6 +399,20 @@ Verify the tag points at the new commit:
 git show --stat "v<NEXT_VERSION>" | head -5
 ```
 
+**Idempotent re-entry:** before staging, check whether HEAD already is the release commit and whether the tag already exists:
+
+```bash
+HEAD_SUBJECT=$(git log -1 --format='%s')
+TAG_EXISTS=$(git tag -l "v<NEXT_VERSION>")
+```
+
+- Both present and consistent (HEAD subject starts with `release: <NEXT_VERSION>`, tag points at HEAD) → skip §9 entirely, go to §10.
+- Only the commit is present (no tag) → run only the `git tag -a` step.
+- Only the tag is present (no commit, or commit subject does not match) → **abort** with `partial §9 state — inspect manually`. Auto-repairing a stray tag is risky; the user resolves it.
+- Neither present → proceed with the full §9 as written above.
+
+**Checkpoint write (after commit + tag both land):** update state file with `checkpoint=post-§9`.
+
 ---
 
 ## 10. Final summary (do NOT publish or push)
@@ -315,6 +434,8 @@ Next steps (NOT done automatically):
 
 Stop here. **Do not run** `cargo publish` or any `git push`. Both are externally-visible, irreversible actions that require explicit human go-ahead per the user-confirmation policy in the harness.
 
+**State cleanup (final):** delete `/tmp/indexmap_store-release-state.json` and `/tmp/release-notes-<NEXT_VERSION>.md`. The next `/release` invocation starts fresh from §0. Cleanup happens last so that an exception during §10 itself (very unlikely — it only prints) does not strand a half-cleaned state.
+
 ---
 
 ## Hard rules
@@ -328,3 +449,7 @@ Stop here. **Do not run** `cargo publish` or any `git push`. Both are externally
 - Never edit anything other than `CHANGELOG.md`, `Cargo.toml` (and the auto-refreshed `Cargo.lock`) during a bump. The one allowed exception is adding `"CHANGELOG.md"` to the `include` array in `Cargo.toml` on the first release that ships it (§8). If the release needs README updates, doctests, or other metadata changes, those are pre-release commits the user makes before invoking `/release`.
 - If the working tree is not clean, you are NOT on `master`, or the remote is divergent — abort. Do not "fix" these conditions silently.
 - If only internal commits exist since the prior release, the default answer is "no release needed". Only proceed if the user explicitly overrides.
+- Never resume past a state-file validation failure — always restart fresh. The state file is a convenience; a mismatched state is a bug, not a recoverable condition.
+- Never write the state file from a section before that section's work has fully completed. A checkpoint that says "post-§N" must mean §N landed cleanly. Crashes between sections leave the previous checkpoint visible, which is correct.
+- The state file's checkpoint is the **only** thing that skips re-running a section. Filesystem detection (Cargo.toml version, CHANGELOG header, existing tag) is used **inside** a section for idempotent re-entry, not as a substitute for the checkpoint.
+- On any user-facing commit landing between `head_sha_at_approval` and HEAD (validated in §0a), invalidate the state and force fresh approval — silently resuming would ship a stale changelog.
