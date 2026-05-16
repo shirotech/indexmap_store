@@ -1,6 +1,6 @@
 [package]
 name = "indexmap_store"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Persistent IndexMap for Rust — embedded key-value store with in-memory hash map + append-only WAL on disk. O(1) get/insert/remove, insertion-order iteration, crash-safe recovery, automatic log compaction, serde-generic keys and values. No dependencies on sled/sqlite."
 license = "MIT"
@@ -15,6 +15,7 @@ include = [
     "Cargo.toml",
     "README.md",
     "LICENSE",
+    "CHANGELOG.md",
 ]
 
 [dependencies]
